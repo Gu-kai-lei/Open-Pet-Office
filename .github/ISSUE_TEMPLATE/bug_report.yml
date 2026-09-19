@@ -1,0 +1,48 @@
+name: Bug report
+description: 报告可复现的问题
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢反馈。提交前请移除密钥、令牌和私人会话内容。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么？预期应该怎样？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 看到…
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Open Pet Office 版本
+      placeholder: 例如 0.10.0
+    validations:
+      required: true
+  - type: input
+    id: codex
+    attributes:
+      label: Codex / OpenCodex 版本
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: Windows 版本、Node.js 版本、模型与必要的脱敏日志。
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认内容中不含 API Key、访问令牌或私人会话信息。
+          required: true

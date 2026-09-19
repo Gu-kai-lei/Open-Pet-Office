@@ -1,120 +1,171 @@
-# Open Pet Office · 开源电子办公室
+<div align="center">
 
-多模型协作桌宠：一只主管宠物常驻桌面，接到复杂任务后召集最多 4 只工作者宠物并行干活。主对话保持在 Codex 桌面端，工作者通过 Codex CLI（经 OpenCodex 代理）使用不同模型（GPT、DeepSeek 等），共享同一个项目工作区，完成后把汇总写回给主线程。
+# Open Pet Office
 
-## 功能（v0.10.0）
+### 把你的 AI Agent 团队放到 Windows 桌面上
 
-- 透明置顶宠物层：主管常驻；所有桌宠可自由拖动并记住位置，悬停显示聊天与任务动态入口
-- 实时监听 Codex 原生任务：只读解析 ~/.codex/sessions 会话日志，按根任务聚合多段日志；无需先通过桌宠发任务，主管宠物即可显示正在工作的对话、模型、阶段与最新进度，点击直达原任务
-- 覆盖全部用户会话入口：Codex 桌面端、Work 桌面端、原生宠物快速对话、IDE 扩展和 CLI，卡片上以来源徽章区分；内部子任务、审批审核器与无头 exec 运行仍默认排除
-- 中断状态可视化：任务被中断时桌宠显示灰色停止徽章并提示"任务已中断"，完成/失败/中断等终态徽章只短暂展示后自动回到待命；迟到的完成记录不会把已中断的任务改成完成
-- 拖拽收文件：把文件从资源管理器拖到任意桌宠上，文件会复制进当前项目的 inbox/ 目录（所有 Agent 共享可读），自动打开该桌宠的输入框并显示附件卡片；发送时把工作区内的相对路径随任务一起交给模型，也和分工模式兼容
-- 任务动态中心重构：按「需要你处理 → 等待处理 → 进行中 → 最近动态」分成单一滚动区域；数据更新时原位刷新列表，不再重开面板或重播展开动画
-- 铃铛面板改为显式状态机（closed → opening → open → closing）加动画版本号：关闭动画途中再次点击可立即反向展开，连续快速点击与任务更新不会再造成“点不开”
-- 内部子任务、审批审核器与系统会话默认折叠进根任务；命令、文件路径与回复中的密钥、令牌会先脱敏再显示
-- Codex 会话日志不可读或监听中断时，任务中心显示「Codex Desktop 状态暂时不可用」，不会误报为没有任务
-- 悬停时只出现一个输入按钮；点击后按钮本身在原位展开成输入栏，关闭时收回按钮，无位移跳变
-- 单 Agent 模式按回车或发送键后立即进入 Codex 会话；参与者选择和二次确认只在分工模式中出现
-- 任务铃铛从悬停快捷条原位展开为深色动态抽屉，收起时回到铃铛，不再弹出独立面板
-- 主管实时任务卡：任意 Agent 开工后自动常驻主管下方，显示 Agent、当前任务、工作阶段及最新命令/文件/工具/回复动态；点击直接打开对应 Codex 任务
-- 实时任务卡、输入框和铃铛任务中心遵循互斥布局；任务卡出现时快捷工具条保持可见，铃铛展开后由单滚动任务中心接替，不再相互遮挡
-- 单 Agent 对话通过 Codex App Server 实时流式运行；同一只主管宠物会复用当前任务，点击可跳回 Codex 桌面端原任务
-- 任务动态中心：集中查看 Pet Office 会话、分工任务与 Codex Desktop 原生任务，并一键打开原任务
-- 审批与提问卡片：命令执行、文件修改、权限升级会暂停等待允许或拒绝；Agent 提问可直接在桌宠端回答
-- 桌面体验设置：迷你模式、80%～140% 桌宠尺寸、减少动画，以及四组可选的全局显示/隐藏快捷键
-- 明确的状态提醒：等待确认、完成和失败会在桌宠右上角显示独立徽标；设置与任务面板优先停靠在桌宠侧面
-- 独立形象页面：用图片卡片陈列默认形象与所有已安装 Petdex 形象；缩略图会从精灵图中自动裁出有效帧、去除透明留白，支持一键刷新，末尾固定「发现形象」入口
-- 多 Agent 实时进度：从 Codex CLI JSON 事件提取分析、命令、文件、回复和汇总动态，显示在桌宠气泡、任务动态与最近任务中
-- Petdex 皮肤网格与逐帧有效性自动识别（解码 spritesheet 后统计每行非空帧），状态动画只播放真实存在的帧
-- 右键可召唤或隐藏每位工作者；隐藏主管只会收进系统托盘，后台任务继续，只有「退出 Pet Office」才关闭进程
-- 分工模式：输入框右侧开关控制单 Agent / 多 Agent 路由，状态会持久保存
-- 项目选择器：可搜索已有项目、内联新建项目或添加现有文件夹，所有 Agent 共享同一个工作区
-- 新任务：填任务 → 选参与者和各自模型 →（可选）主管模型先拆解简报 → 确认 → 并行执行
-- 宠物状态动画：待命浮动、走动摇摆、打工抖动、完成跳跃、失败抖肩；气泡消息
-- Petdex 皮肤兼容：自动读取 `~/.petdex/pets` 中的标准 8×9 / 8×11 spritesheet，并把任务状态映射到对应动画
-- 用量显示：切换模型后立即更新；GPT 类显示 5 小时 / 本周剩余百分比（账户共享），DeepSeek 等外接 API 显示同供应商共享余额
-- 每只宠物可随时切换模型（读 OpenCodex 模型目录），可设 token 用量上限、改名、取消任务
-- 最近 100 条任务持久保存；工作者面板可打开对应 Codex 会话或结果文件
-- 系统托盘或 Ctrl+Alt+P 显示 / 隐藏，Ctrl+Alt+Q 退出（不再有全屏变半透明滑到侧边的行为）
-- 桥接文件夹：Codex 桌面端主线程可以派任务给桌宠、收汇总（见下方协议）
-- 开机自启（设置中开启；打包版生效）
+一只主管桌宠常驻桌面，需要协作时再召集工作者。<br>
+实时同步 Codex 任务，支持多模型分工、共享项目工作区、审批提醒与文件拖拽。
 
-## 前置条件
+[![CI](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml/badge.svg)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-0.10.0-f5a623)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
 
-- Windows 10/11、Node.js 18+
-- Codex CLI ≥ 0.155（codex --version）
-- OpenCodex 代理在运行：ocx start（或已装服务）。代理关闭时无法读配额，外接模型也不可用
+> 当前为早期预览版，适合愿意边用边完善的开发者。
 
-## 安装与启动
+</div>
 
-    git clone https://github.com/Gu-kai-lei/Open-Pet-Office.git
-    cd Open-Pet-Office
-    npm install
-    npm start
+<p align="center">
+  <img src="docs/assets/live-task.png" alt="Open Pet Office 实时任务卡" width="49%" />
+  <img src="docs/assets/task-center.png" alt="Open Pet Office 任务动态中心" width="49%" />
+</p>
 
-开发检查与 Windows 便携版打包：
+## 为什么做它
 
-    npm run check
-    npm run dist
+Codex、DeepSeek 和其他模型可以各自完成任务，但并行工作时往往缺少一个统一、直观的入口。Open Pet Office 把它们变成桌面上的可见团队：主管负责接收任务和调度，工作者共享项目文件，并把状态、审批与结果持续反馈到同一块桌面界面。
 
-便携版输出到 `dist/Pet-Office-0.10.0-portable.exe`。运行打包版后，设置中的开机自启才会生效。
+## 核心能力
 
-首次启动后，桌面右下区域会出现主管宠物（默认名 Michael）。
+| 能力 | 说明 |
+| --- | --- |
+| 🐾 桌面 Agent | 透明置顶、自由拖动、状态动画、系统托盘与快捷键 |
+| 🔔 实时任务 | 只读监听 Codex 会话日志，无需先从桌宠发起任务即可显示进度 |
+| 🧠 多 Agent 分工 | 1 名主管 + 最多 4 名工作者，共享同一个项目工作区 |
+| 🔀 多模型路由 | 读取 OpenCodex 模型目录，可为每只桌宠独立选择模型 |
+| 📎 拖拽文件 | 将资源管理器文件拖给桌宠，自动复制到项目 `inbox/` 并附加到任务 |
+| ✅ 审批与问答 | 命令、文件修改、权限申请和 Agent 提问集中显示并可处理 |
+| 🎨 可换形象 | 兼容 Petdex 标准 spritesheet，自动识别可用动画帧 |
+| 📊 用量视图 | GPT 显示账户级 5 小时/每周额度；外接 API 在供应商支持时显示余额 |
 
-## Petdex 皮肤
+## 30 秒开始
 
-先在 [petdex.dev](https://petdex.dev/) 选择形象，然后按页面给出的命令安装，例如：
+### 前置条件
 
-    npx petdex install boba
+- Windows 10/11
+- Node.js 18+
+- Codex CLI 0.155 或更高版本
+- 可选：[OpenCodex](https://github.com/lidge-jun/opencodex)，用于接入 DeepSeek 等第三方模型
 
-安装后，左键桌宠 →「形象」即可切换；应用运行期间新装的皮肤可点「刷新」立即载入。Pet Office 不内置第三方皮肤；皮肤作者与底层 IP 的授权范围可能不同，公开分发软件时请自行确认所选皮肤许可。
+### 本地运行
 
-本机已按 Petdex 的 Most installed 排序安装 10 套测试形象：Boba、Doraemon、噜噜、Shinchan、JokeBear-CodexPet、Tiko、Noir Webling、Wangcai、Usagi、Pikachu。
+```powershell
+git clone https://github.com/Gu-kai-lei/Open-Pet-Office.git
+cd Open-Pet-Office
+npm install
+npm start
+```
 
-已在 Boba（v2 皮肤包，`spriteVersionNumber: 2` + `spritesheetPath`）上验证：待命、挥手、工作、等待、完成、失败等状态会映射到对应动画行。
+首次启动后，主管桌宠会出现在桌面右下区域。悬停桌宠即可打开输入框或任务动态。
 
-开发期自检开关（需要 GUI）：`npm start -- --capture-ui=<输出png> --capture-view=<panel|composer|team|deepseek|boba-composer|live-task|activity|appearance|appearance-bottom|experience|dismiss|poses|morph|dragtest|scale-dragtest>`，运行结果会写入 `~/.pet-office/logs/app.log`；截图模式可与正在运行的正式实例并存，不启动托盘、桥接和配额轮询。
+### 构建 Windows 便携版
 
-## 典型流程
+```powershell
+npm test
+npm run dist
+```
 
-也可以直接把文件从资源管理器拖到任意桌宠上：文件复制进当前项目 inbox/ 后自动带入输入框，写一句要求即可发送；没有项目时会自动创建「上传-日期」项目。
+产物位于 `dist/Pet-Office-0.10.0-portable.exe`。
 
-1. 悬停主管，点击输入图标；或左键主管，在「工作」页新建 / 添加项目
-2. 在输入框右侧开启「分工」→ 选择项目、参与者及各自模型 → 确认
-3. 工作者宠物集合走位 → 各自开工（codex exec 在项目目录并行跑）→ 完成后跳跃庆祝
-4. 汇总写入 ~/.pet-office/bridge/from-pets/，同时项目 tasks/ 里留有每个人的 brief/result
+## 常用操作
 
-## 项目工作区结构
+### 单 Agent 对话
 
-    <项目目录>/
-      HIVE.md      # 共享约定（每次开工前先读）
-      MEMORY.md    # 共享记忆（agent 把有用结论追加进来）
-      tasks/       # <id>.brief.md / <id>.result.md / 计划文件
-      messages/    # 预留
+1. 悬停主管桌宠，点击输入图标。
+2. 保持“分工”关闭，输入任务并发送。
+3. 桌宠显示当前阶段；点击任务卡可回到对应 Codex 任务。
 
-## 桥接协议（让 Codex 主线程指挥桌宠）
+### 多 Agent 协作
 
-把 bridge/AGENTS-bridge.md 的内容粘进主线程项目说明（或 AGENTS.md），主线程就能：
+1. 打开输入框并开启“分工”。
+2. 选择或新建项目，再选择参与者与各自模型。
+3. 主管拆解任务，工作者并行执行，结果最终汇总回主任务。
 
-- 写 to-pets/*.json 派单 → 桌宠自动执行
-- 读 from-pets/*.md 拿汇总
+### 拖入附件
 
-## 安全边界
+把文件从资源管理器直接拖到任意桌宠。文件会复制到当前项目的 `inbox/`，自动出现在输入框中；没有项目时会创建一个按日期命名的上传项目。
 
-- 单 Agent 对话通过 Codex App Server 以 `workspace-write + on-request` 运行；额外命令、文件修改和权限申请会显示在任务动态中心，由用户决定
-- 多 Agent 工作者以 `codex exec --sandbox workspace-write` 运行，只能写项目目录，无法提权
-- 删除等敏感操作遵循 Codex 自带审批策略；桥接派单内容仍需自己把关
-- 管理令牌只读自 ~/.opencodex/admin-api-token，仅用于本地配额接口
+## 工作原理
 
-## 已知限制（v0.10.0）
+```mermaid
+flowchart LR
+    U[你] --> P[主管桌宠]
+    P --> A[Codex App Server]
+    P --> D[多 Agent 调度器]
+    D --> W1[工作者 1]
+    D --> W2[工作者 2]
+    D --> W3[工作者 3]
+    D --> W4[工作者 4]
+    W1 & W2 & W3 & W4 --> S[共享项目工作区]
+    C[Codex Desktop 会话日志] -. 只读监听 .-> P
+    A & D --> O[OpenCodex / 模型供应商]
+```
 
-- 单 Agent 已接入 Codex App Server；多 Agent 分工仍使用 Codex CLI 并行执行，但已能实时解析和展示工作进度，后续阶段再统一到 App Server 任务模型
-- Codex Desktop 原生任务监控基于本地 ~/.codex/sessions JSONL 日志的只读增量解析，严格不写入、不移动、不归档任何会话文件；日志格式由 Codex 版本决定，升级后如字段变化需要同步适配
-- 拖入的文件按原样复制进 inbox/，单次最多 20 个、单个不超过 200MB；模型能否直接读图取决于该模型自身能力，不具备视觉能力的模型仍可通过工具读取附件路径
-- 按项目和宠物持久保存会话关联；重启后发送消息先恢复原线程。如果原线程已被 Codex Desktop 占用，会自动创建新的桌面可见任务；其他恢复错误仍会明确提示。升级前的会话仍可从历史任务打开。
-- 新建的主管会话使用 Codex Desktop 来源标识并设置标题；任务完成后 Pet Office 释放线程，桌面端随后可接管输入。任务执行期间由 Pet Office 持有线程，此时桌面端以查看进度为主。
-- 应用重启会把上次未完成任务标记为执行连接断开；不会自动重放任务或自动回答审批，请先在原任务确认执行结果。
-- Codex 暂无公开稳定接口让第三方应用直接创建桌面端侧栏项目；Pet Office 使用同一项目目录作为权威工作区
-- 「打开 Codex」用 codex:// 协议，会话级深链（codex://threads/<id>）为实验性
-- OpenCodex 外接 API 的余额取决于供应商是否提供配额接口，无法读取时只显示本地累计用量
-- Petdex 皮肤需要先在本机安装，暂不支持直接在 Pet Office 内下载
+项目工作区约定：
+
+```text
+<project>/
+├─ HIVE.md       # 团队共享约定
+├─ MEMORY.md     # 项目长期记忆
+├─ inbox/        # 拖入的附件
+├─ tasks/        # 任务简报、计划与结果
+└─ messages/     # Agent 间消息（预留）
+```
+
+## 隐私与安全
+
+- Codex Desktop 任务监控仅只读解析本机 `~/.codex/sessions`，不会修改、移动或归档会话文件。
+- 命令、路径和回复在桌面卡片显示前会截断并脱敏 API Key、Authorization、token、密码等内容。
+- 单 Agent 使用 `workspace-write + on-request`；多 Agent 工作者使用 `workspace-write` 沙箱。
+- API Key 不写入项目仓库；OpenCodex 管理令牌仅从本机配置读取。
+- 拖入文件会复制到项目目录，单次最多 20 个、单个不超过 200 MB。
+
+发现安全问题请参阅 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中粘贴密钥或私人日志。
+
+## Petdex 形象
+
+前往 [petdex.dev](https://petdex.dev/) 选择形象，并按网站说明安装，例如：
+
+```powershell
+npx petdex install boba
+```
+
+安装后在桌宠左键菜单的“形象”页刷新即可。Open Pet Office 不捆绑第三方皮肤；公开分发皮肤前请确认作者和底层 IP 的许可。
+
+## 开发
+
+```powershell
+npm install
+npm test
+npm start
+```
+
+测试覆盖会话日志聚合、增量读取、脱敏、任务生命周期、铃铛状态机、附件收件箱、会话恢复和 App Server 进度映射。贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 当前限制
+
+- 当前以 Windows 10/11 为主，尚未针对 macOS 和 Linux 适配。
+- 多 Agent 分工仍通过 Codex CLI 并行执行；单 Agent 已使用 Codex App Server。
+- Codex 会话监听依赖本地 JSONL 日志格式，Codex 升级后可能需要同步适配。
+- Codex 暂无公开稳定接口让第三方应用直接创建桌面端侧栏项目；项目目录仍是权威工作区。
+- 外接模型余额取决于供应商是否提供配额接口，无法读取时仅显示本地累计用量。
+- `codex://threads/<id>` 会话深链仍属于实验性能力。
+
+## 路线图
+
+- [ ] 统一单 Agent 与多 Agent 的 App Server 任务模型
+- [ ] 项目级共享记忆检索与可视化
+- [ ] 更完整的 Agent 间消息与任务依赖视图
+- [ ] 供应商配额适配器与预算策略
+- [ ] 安装包、自动更新与签名发布
+- [ ] 可选的跨平台支持
+
+## 致谢与说明
+
+本项目受 Codex 桌宠、Munder Difflin 和多 Agent 编排工具的交互启发，并使用 OpenCodex 作为可选模型接入层、Petdex 作为可选形象生态。
+
+Open Pet Office 是社区项目，与 OpenAI、Petdex、各模型供应商及第三方皮肤作者无官方隶属关系。Codex、DeepSeek 及其他名称分别属于其权利人。
+
+## License
+
+[MIT](LICENSE)

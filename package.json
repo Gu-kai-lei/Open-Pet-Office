@@ -3,6 +3,21 @@
   "productName": "Pet Office",
   "version": "0.10.0",
   "description": "电子办公室：多模型协作桌宠（Codex + DeepSeek，经 OpenCodex 路由）",
+  "keywords": [
+    "codex",
+    "desktop-pet",
+    "multi-agent",
+    "electron",
+    "opencodex"
+  ],
+  "homepage": "https://github.com/Gu-kai-lei/Open-Pet-Office#readme",
+  "bugs": {
+    "url": "https://github.com/Gu-kai-lei/Open-Pet-Office/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gu-kai-lei/Open-Pet-Office.git"
+  },
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
