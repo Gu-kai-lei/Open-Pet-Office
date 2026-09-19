@@ -1,0 +1,212 @@
+'use strict';
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const { log, CODEX_HOME } = require('./config');
+
+const running = new Map();
+let queue = [];
+let activeCount = 0;
+let maxParallel = 5;
+let emit = () => {};
+
+function setConcurrency(n) { maxParallel = Math.max(1, n | 0 || 5); pump(); }
+function setEmitter(fn) { emit = fn; }
+
+function ensureProjectDirs(projectDir) {
+  for (const sub of ['tasks', 'messages']) fs.mkdirSync(path.join(projectDir, sub), { recursive: true });
+  const hive = path.join(projectDir, 'HIVE.md');
+  if (!fs.existsSync(hive)) fs.writeFileSync(hive, '# Hive Board\n\n_共享计划与约定。每个 agent 开始任务前先读这里，完成后把对团队有用的结论追加到 MEMORY.md。_\n', 'utf8');
+  const mem = path.join(projectDir, 'MEMORY.md');
+  if (!fs.existsSync(mem)) fs.writeFileSync(mem, '# MEMORY\n\n_团队共享记忆：重要结论、约定、进度。按时间倒序追加，一行一条。_\n', 'utf8');
+}
+
+function startTask(task) {
+  queue.push(task);
+  emit({ type: 'queued', taskId: task.id });
+  pump();
+  return task.id;
+}
+
+function pump() {
+  while (activeCount < maxParallel && queue.length) {
+    const t = queue.shift();
+    activeCount++;
+    run(t).finally(() => { activeCount--; pump(); });
+  }
+}
+
+function run(t) {
+  return new Promise(resolve => {
+    try {
+      ensureProjectDirs(t.projectDir);
+    } catch (e) {
+      emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '项目目录创建失败: ' + e.message });
+      return resolve();
+    }
+    const briefPath = path.join(t.projectDir, 'tasks', t.id + '.brief.md');
+    const outPath = path.join(t.projectDir, 'tasks', t.id + '.result.md');
+    const brief = (t.brief || '(无简报)') + '\n\n---\n工作约定：\n- 先读 HIVE.md 与 MEMORY.md，遵守其中约定。\n- 需要修改项目时直接在共享工作区完成。\n- 最终回复必须包含完整结果或工作报告；系统会自动保存为 tasks/' + t.id + '.result.md。\n- 有对团队有用的结论时，追加到 MEMORY.md。\n';
+    try { fs.writeFileSync(briefPath, brief, 'utf8'); } catch (e) {
+      emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '简报写入失败: ' + e.message });
+      return resolve();
+    }
+    const prompt = 'Read tasks/' + t.id + '.brief.md in this workspace and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.';
+    const args = ['/c', 'codex', 'exec', '--json', '--skip-git-repo-check', '-C', t.projectDir, '--sandbox', 'workspace-write', '-o', outPath];
+    if (t.model) args.push('-m', t.model);
+    args.push(prompt);
+    emit({ type: 'started', taskId: t.id, model: t.model || '(codex默认)' });
+    const startedAt = Date.now();
+    let child;
+    try {
+      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '无法启动 codex: ' + e.message });
+      return resolve();
+    }
+    const runtime = { child, meta: t, cancelled: false };
+    running.set(t.id, runtime);
+    let buf = '';
+    let latestTokens = 0;
+    let latestProgress = '';
+    const onLine = line => {
+      line = line.trim();
+      if (!line.startsWith('{')) return;
+      try {
+        const obj = JSON.parse(line);
+        const tid = obj.thread_id || obj.session_id || (obj.thread && obj.thread.id) || (obj.msg && (obj.msg.id || obj.msg.thread_id));
+        if (tid && !t.threadId) { t.threadId = tid; emit({ type: 'session', taskId: t.id, threadId: tid }); }
+        const usage = findTotalTokens(obj);
+        if (typeof usage === 'number' && usage > latestTokens) {
+          latestTokens = usage;
+          emit({ type: 'usage', taskId: t.id, tokens: usage });
+        }
+        const progress = progressFromEvent(obj);
+        if (progress && progress.text !== latestProgress) {
+          latestProgress = progress.text;
+          emit({ type: 'progress', taskId: t.id, stage: progress.stage, text: progress.text });
+        }
+      } catch {}
+    };
+    child.stdout.on('data', d => { buf += d.toString(); const lines = buf.split(/\r?\n/); buf = lines.pop(); lines.forEach(onLine); });
+    child.stderr.on('data', d => { const s = d.toString().trim(); if (s) emit({ type: 'log', taskId: t.id, text: s.slice(0, 400) }); });
+    child.on('exit', code => {
+      running.delete(t.id);
+      if (!runtime.cancelled) {
+        const sessionTokens = readSessionTokens(t.threadId, startedAt);
+        if (sessionTokens > latestTokens) {
+          latestTokens = sessionTokens;
+          emit({ type: 'usage', taskId: t.id, tokens: sessionTokens });
+        }
+        emit({ type: code === 0 ? 'done' : 'failed', taskId: t.id, exitCode: code, elapsedMs: Date.now() - startedAt });
+      }
+      resolve();
+    });
+    child.on('error', e => {
+      running.delete(t.id);
+      if (!runtime.cancelled) emit({ type: 'failed', taskId: t.id, exitCode: -1, error: e.message });
+      resolve();
+    });
+  });
+}
+
+function oneLine(value, limit = 240) {
+  const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+}
+
+function progressFromEvent(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const type = String(obj.type || obj.method || '').toLowerCase();
+  const item = obj.item || (obj.params && obj.params.item) || obj.msg || {};
+  const itemType = String(item.type || item.kind || '').toLowerCase();
+  if (type.includes('turn.started') || type.includes('turn/started')) return { stage: 'thinking', text: '正在分析任务' };
+  if (itemType.includes('command')) {
+    const command = oneLine(item.command || item.cmd || item.arguments || item.input || '', 180);
+    if (type.includes('started')) return { stage: 'command', text: command ? '运行命令 · ' + command : '正在运行命令' };
+    if (type.includes('completed')) return { stage: 'command', text: command ? '命令完成 · ' + command : '命令执行完成' };
+  }
+  if (itemType.includes('file') || itemType.includes('patch')) {
+    const target = oneLine(item.path || item.file_path || item.filePath || item.summary || '', 180);
+    return { stage: 'file', text: target ? '更新文件 · ' + target : '正在更新项目文件' };
+  }
+  if (itemType.includes('agent_message') || itemType === 'message') {
+    const message = oneLine(item.text || item.content || item.message || '', 220);
+    if (message) return { stage: 'report', text: message };
+  }
+  if (itemType.includes('reasoning')) return { stage: 'thinking', text: '正在梳理方案与核验结果' };
+  if (type.includes('turn.completed') || type.includes('turn/completed')) return { stage: 'finishing', text: '正在整理最终结果' };
+  return null;
+}
+
+function findTotalTokens(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return null;
+  const preferred = [
+    obj.thread_token_usage,
+    obj.turn_token_usage,
+    obj.total_token_usage,
+    obj.info && obj.info.total_token_usage,
+    obj.usage,
+  ];
+  for (const usage of preferred) {
+    if (usage && typeof usage.total_tokens === 'number') return usage.total_tokens;
+  }
+  if (typeof obj.total_tokens === 'number') return obj.total_tokens;
+  for (const k of Object.keys(obj)) {
+    const v = findTotalTokens(obj[k], depth + 1);
+    if (typeof v === 'number') return v;
+  }
+  return null;
+}
+
+function readSessionTokens(threadId, startedAt) {
+  if (!threadId) return 0;
+  const dayDirs = new Set();
+  for (const delta of [-86400000, 0, 86400000]) {
+    const d = new Date(startedAt + delta);
+    dayDirs.add(path.join(CODEX_HOME, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')));
+    dayDirs.add(path.join(CODEX_HOME, 'sessions', String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), String(d.getUTCDate()).padStart(2, '0')));
+  }
+  for (const dir of dayDirs) {
+    try {
+      const name = fs.readdirSync(dir).find(x => x.includes(threadId) && x.endsWith('.jsonl'));
+      if (!name) continue;
+      const lines = fs.readFileSync(path.join(dir, name), 'utf8').trim().split(/\r?\n/);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].includes('token')) continue;
+        try {
+          const value = findTotalTokens(JSON.parse(lines[i]));
+          if (typeof value === 'number' && value > 0) return value;
+        } catch {}
+      }
+    } catch {}
+  }
+  return 0;
+}
+
+function cancel(taskId) {
+  const r = running.get(taskId);
+  if (!r) {
+    queue = queue.filter(t => t.id !== taskId);
+    emit({ type: 'cancelled', taskId });
+    return true;
+  }
+  r.cancelled = true;
+  emit({ type: 'cancelled', taskId });
+  try { spawn('cmd.exe', ['/c', 'taskkill', '/PID', String(r.child.pid), '/T', '/F'], { windowsHide: true }); } catch (e) { log('cancel: ' + e.message); }
+  return true;
+}
+
+function snapshot() {
+  return { active: [...running.keys()], queued: queue.map(t => t.id), activeCount };
+}
+
+module.exports = {
+  startTask,
+  cancel,
+  setConcurrency,
+  setEmitter,
+  ensureProjectDirs,
+  snapshot,
+  _internals: { findTotalTokens, readSessionTokens, progressFromEvent, oneLine },
+};

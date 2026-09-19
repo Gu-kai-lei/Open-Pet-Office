@@ -1,0 +1,41 @@
+{
+  "name": "open-pet-office",
+  "productName": "Pet Office",
+  "version": "0.10.0",
+  "description": "电子办公室：多模型协作桌宠（Codex + DeepSeek，经 OpenCodex 路由）",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/check.js",
+    "test": "npm run check && node scripts/session-monitor-test.js && node scripts/activity-state-test.js && node scripts/inbox-test.js && node scripts/conversation-recovery-test.js && node scripts/appserver-progress-test.js",
+    "dist": "electron-builder --win portable"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "local.petoffice.desktop",
+    "productName": "Pet Office",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "Pet-Office-${version}-portable.${ext}"
+    }
+  }
+}
