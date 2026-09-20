@@ -22,3 +22,18 @@ body:
     attributes:
       label: 可选方案
       description: 是否考虑过其他实现或临时替代办法？
+  - type: dropdown
+    id: area
+    attributes:
+      label: 功能范围
+      options:
+        - 桌宠与桌面交互
+        - Codex 会话与实时任务
+        - 多 Agent Mission
+        - 项目、文件与记忆
+        - 模型、供应商与额度
+        - 形象与动画
+        - 安装、更新与发布
+        - 其他
+    validations:
+      required: true

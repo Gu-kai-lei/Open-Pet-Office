@@ -2,6 +2,8 @@
 
 感谢你愿意帮助完善 Open Pet Office。
 
+开始前建议先阅读 [快速上手](docs/GETTING_STARTED.md)、[架构说明](docs/ARCHITECTURE.md) 和 [路线图](docs/ROADMAP.md)。它们分别描述用户流程、模块边界和当前优先级。
+
 ## 开始之前
 
 - Bug 请使用 Bug report 模板，并尽量附上可复现步骤、Codex 版本和 Pet Office 日志摘要。
@@ -17,6 +19,15 @@ npm start
 ```
 
 当前主要支持 Windows 10/11。涉及 UI 的改动请同时验证普通动画和“减少动画”设置；涉及会话监听的改动应补充对应 JSONL 生命周期测试。
+
+### 目录导航
+
+| 目录 | 内容 |
+| --- | --- |
+| `src/` | Electron 主进程、Codex 接入、Session Monitor、Mission 与项目服务 |
+| `renderer/` | 桌宠、输入框、任务中心和设置 UI |
+| `scripts/` | 回归测试、状态机测试和本地验证脚本 |
+| `docs/` | 用户指南、架构、路线图与产品截图 |
 
 ## Pull Request
 

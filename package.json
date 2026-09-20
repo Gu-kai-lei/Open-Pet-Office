@@ -9,7 +9,11 @@
     "desktop-pet",
     "multi-agent",
     "electron",
-    "opencodex"
+    "opencodex",
+    "ai-agents",
+    "agent-orchestration",
+    "deepseek",
+    "windows"
   ],
   "homepage": "https://github.com/Gu-kai-lei/Open-Pet-Office#readme",
   "bugs": {

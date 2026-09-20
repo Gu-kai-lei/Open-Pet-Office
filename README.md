@@ -1,303 +1,188 @@
 <div align="center">
+  <img src="docs/assets/brand-mark.svg" width="112" alt="Open Pet Office logo">
 
 # Open Pet Office
 
-### 把 AI Agent 团队搬到你的 Windows 桌面
+### 把你的 AI Agent 团队，搬到 Windows 桌面
 
-一只主管桌宠常驻桌面，复杂任务到来时再召集最多 4 名工作者。<br>
-Codex 实时任务、多模型分工、项目记忆、审批与附件，都集中在一个轻量桌面入口。
+一只主管桌宠接收任务，需要时召集最多 4 名工作者。<br>
+实时同步 Codex 任务，用不同模型并行协作，在隔离工作区完成、检查并安全交付。
 
 [简体中文](README.md) · [English](README_EN.md)
 
-[![CI](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml/badge.svg)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.13.0-f5a623)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
-[![License: MIT](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Gu-kai-lei/Open-Pet-Office?style=flat-square&color=F2A62B)](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Gu-kai-lei/Open-Pet-Office/total?style=flat-square&color=4C9AFF)](https://github.com/Gu-kai-lei/Open-Pet-Office/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/Gu-kai-lei/Open-Pet-Office/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square&logo=windows11)](#下载与快速开始)
+[![License](https://img.shields.io/github/license/Gu-kai-lei/Open-Pet-Office?style=flat-square&color=3DA639)](LICENSE)
 
+**[下载 Windows 便携版](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest)** · [5 分钟快速上手](docs/GETTING_STARTED.md) · [提交问题](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new/choose)
 </div>
 
-![Open Pet Office 产品界面：主管、分工与任务动态](docs/assets/hero-v2.png)
-
-<p align="center"><sub>主管与额度 · 多 Agent 分工 · 审批和任务动态</sub></p>
+![Open Pet Office：主管桌宠、多 Agent 分工与实时任务中心](docs/assets/hero-v2.png)
 
 > [!IMPORTANT]
-> 当前版本是面向 Windows 的早期预览版。它已经能用于真实任务，但接口、数据结构和交互仍可能快速演进。
+> Open Pet Office 目前是 Windows 早期预览版。它已可处理真实项目，但界面、协议和数据结构仍会继续演进。
 
-### v0.13.0：桌面体验与发布可靠性
+## 为什么是 Open Pet Office？
 
-- 支持跟随鼠标、固定主屏或指定显示器；切屏后自动将桌宠约束到可见工作区。
-- 检测全屏应用后可选择角落避让、完全隐藏或保持原样。
-- 新增安静、标准、详细三档通知；实时状态仍持续更新，不因减少通知而丢失任务。
-- 重构附件卡片、字号和字体选项，并补充键盘导航、焦点状态和读屏播报。
-- 崩溃报告仅保存在本机且自动脱敏；应用内可检查 GitHub Release 更新。
-- Windows portable 构建支持在提供 `CSC_LINK` / `CSC_KEY_PASSWORD` 时进行真实代码签名，并在设置页显示签名状态。
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🐾 看得见的协作</h3>
+      <p>主管常驻桌面，工作者只在任务需要时出现。思考、执行、等待、失败和完成都有清晰状态。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🧠 真正的主管闭环</h3>
+      <p>主管先规划依赖，再分波次派工、检查、重试或重派，最后复核结果。它不是把几段回复简单拼起来。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🔒 项目安全优先</h3>
+      <p>每位工作者在独立 worktree 或快照中执行。冲突、删除和计划外写入会暂停，不会静默覆盖你的文件。</p>
+    </td>
+  </tr>
+</table>
 
-### v0.12.0：项目与会话工作台
+## 下载与快速开始
 
-- 新建、继续和重置 Agent 上下文；项目页集中打开最近 Codex 会话。
-- 项目可重命名、归档、恢复或从列表移除，所有操作都保留磁盘源码。
-- 附件清理严格限定在项目 `inbox/`，执行前二次确认。
-- 任务中心可以按项目筛选，任意实时任务或 Mission 可以固定在主管下方。
-- 模型目录增加代码、视觉、长上下文、速度和成本标签。
-- 分工模式会按任务内容推荐参与 Agent；推荐只做预选，仍由用户确认。
+1. 从 [Releases](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest) 下载 `Pet-Office-*-portable.exe`。
+2. 确认本机已安装并登录 Codex CLI 0.155 或更高版本。
+3. 运行应用，将鼠标移到主管桌宠上，点击输入图标。
+4. 普通任务直接发送；复杂任务开启“分工”，选择项目、Agent 与模型。
 
-### v0.11.0：真正的主管 Agent
+当前公开构建未配置 Windows 签名证书，SmartScreen 可能显示“未知发布者”。Release 页面提供 SHA-256，可用于核对下载文件。
 
-- 分工任务升级为可持久化 Mission：主管先生成依赖计划，用户确认后才开工。
-- 工作者按依赖波次并行执行，每个波次结束后由主管接受、重试、重派或终止节点。
-- 干净 Git 项目使用独立 worktree；脏 Git 与非 Git 项目使用隔离快照副本。
-- 工作者通过结构化报告和变更清单交付，最终结果由主管复核而非文本拼接。
-- 同文件冲突、主项目变化、删除和计划外写入会暂停回写，不会静默覆盖。
-- Mission、依赖、重试和恢复状态集中显示在铃铛任务中心。
+需要第三方模型？安装可选的 [OpenCodex](https://github.com/lidge-jun/opencodex)，即可把 DeepSeek、GLM 等模型路由到 Codex。详细步骤见 [快速上手](docs/GETTING_STARTED.md)。
 
-## 它是什么
-
-Open Pet Office 不是一个单纯的桌宠皮肤，而是 **Codex 与多模型 Agent 的可视化桌面协作层**。
-
-- 平时只有主管桌宠在场，保持桌面安静。
-- 普通问题直接进入单 Agent 会话，体验接近 Codex 原生桌宠。
-- 打开“分工”后，主管拆解任务并召集工作者并行执行。
-- 每只桌宠可以选择不同模型，并从同一项目基线创建隔离工作区。
-- 无论任务从桌宠还是 Codex Desktop 发起，主管都能显示实时状态并跳回原任务。
-
-## 功能全景
-
-| 桌面体验 | Agent 协作 | 项目与安全 |
-| --- | --- | --- |
-| 🐾 透明置顶桌宠 | 🧠 1 主管 + 最多 4 工作者 | 📁 共享项目工作区 |
-| 🖱️ 自由拖动并记住位置 | ⚡ 依赖波次并行执行 | 📝 Mission / 项目记忆 |
-| 💬 原位展开输入框 | 🔀 每只宠物独立选择模型 | 📎 文件拖拽收件箱 |
-| 🔔 可固定任务卡与项目筛选 | 🧩 主管规划、检查与终审 | ✅ 冲突与高风险回写确认 |
-| 🎨 Petdex 动画形象 | 🔗 点击直达 Codex 原任务 | 🔒 敏感内容脱敏与沙箱 |
-| 📊 模型额度与本地用量 | 🌐 OpenCodex 第三方模型路由 | 💾 最近任务与会话恢复 |
-
-## 从发消息到团队交付
-
-```text
-输入任务
-   │
-   ├─ 分工关闭 ─→ 当前桌宠独立完成 ─→ Codex 会话持续更新
-   │
-   └─ 分工开启 ─→ 选择项目 / Agent / 模型
-                         │
-                         ▼
-                    主管分析与拆解
-                         │
-               ┌─────────┼─────────┐
-               ▼         ▼         ▼
-            工作者 A  工作者 B  工作者 C   …最多 4 名
-               └─────────┼─────────┘
-                         ▼
-                  共享文件、记忆与结果
-                         │
-                         ▼
-                  主管汇总回主任务
-```
-
-### 单 Agent：像原生桌宠一样直接
-
-1. 悬停桌宠，点击唯一的输入按钮。
-2. 按钮在原位置平滑展开成输入框。
-3. 保持“分工”关闭，回车即可发送，无需二次确认。
-4. 任务卡持续显示分析、命令、文件、回复或等待处理状态。
-5. 点击任务卡，直接打开 Codex Desktop 中对应会话。
-
-### 多 Agent：只在需要时出现
-
-1. 打开输入框右侧的“分工”开关。
-2. 选择已有项目，或在下拉菜单顶部新建项目。
-3. 使用能力标签与自动推荐预选 Agent，再手动确认参与者和模型。
-4. 主管生成分波次依赖计划，你确认后才启动工作者。
-5. 每个波次结束后主管检查结果，失败节点最多自动重派一次。
-6. 最终修改先在隔离集成区复核，再安全回写主项目。
-
-## 桌宠能展示什么
-
-### 实时任务与任务中心
-
-Open Pet Office 只读监听本机 `~/.codex/sessions` 的增量日志，因此不要求任务必须从桌宠发起。
-
-| 来源 | 能看到的内容 |
-| --- | --- |
-| Codex Desktop / Work Desktop | 根任务、模型、阶段、最近安全进度 |
-| Codex 原生快速对话 | 对话任务与最新状态 |
-| IDE 扩展 / CLI | 用户会话与执行阶段 |
-| Pet Office 单 Agent | 流式回复、审批、提问与结果 |
-| Pet Office 分工任务 | 每位工作者的进度与主管汇总 |
-
-多个任务同时运行时，主管卡片显示最近更新任务和“另有 N 项”；可将重要任务固定。铃铛任务中心按项目筛选，并以“需要处理、进行中、最近完成”统一展示。
-
-### 状态与动画
-
-| 状态 | 桌面反馈 |
-| --- | --- |
-| 待命 | 轻微呼吸或皮肤待机动画 |
-| 分析中 | 任务摘要与推理阶段 |
-| 执行命令 | 安全截断后的命令摘要 |
-| 修改文件 | 文件阶段与脱敏路径摘要 |
-| 等待处理 | 审批或 Agent 提问提醒 |
-| 已完成 | 短暂完成徽章与庆祝动画 |
-| 已中断 | 灰色停止徽章，不会误显示绿色完成 |
-| 连接异常 | 状态未知或连接断开，不永久假装工作中 |
-
-## 文件拖给桌宠
-
-把文件从资源管理器拖到任意桌宠，相当于给该 Agent 添加附件：
-
-- 文件复制到当前项目的 `inbox/`。
-- 输入框自动展开并显示附件卡片。
-- 发送时将工作区相对路径交给模型。
-- 单 Agent 与分工模式都支持。
-- 没有当前项目时自动创建按日期命名的上传项目。
-- 单次最多 20 个文件，单个不超过 200 MB。
-
-> 模型能否理解图片、PDF 或视频取决于模型本身及其可用工具。
-
-## 项目、记忆与 Agent 通信
-
-```text
-<project>/
-├─ inbox/        # 拖入的附件
-└─ .pet-office/
-   ├─ MEMORY.md  # 项目共享记忆
-   └─ missions/  # 计划、事件、消息、审查与产物
-```
-
-- 每位工作者在独立 worktree 或快照副本中工作，避免并发覆盖。
-- 每个模型仍可拥有自己的会话，但项目文件与记忆是团队共享的。
-- 项目页可继续、打开或重置上下文；归档和移除只改变 Pet Office 记录，不删除源码目录。
-- 应用重启后，运行中的 Mission 会进入“已中断、可恢复”，不会盲目重复执行。
-- 桥接协议允许 Codex 主线程通过 `bridge/` 派单并读取汇总。
-
-## 多模型与额度
-
-Open Pet Office 读取 OpenCodex 模型目录，让每只桌宠都能独立切换模型。
-
-- 模型旁显示代码、视觉、长上下文、速度与成本标签；标签来自目录元数据和保守的名称推断。
-- GPT / Codex 登录模型：显示账户共享的 5 小时与每周剩余比例。
-- DeepSeek 等 API 模型：供应商提供余额接口时显示余额，否则显示本地累计用量。
-- 每只桌宠可设置 token 用量上限。
-- OpenCodex 代理不可用时，会明确显示模型或额度不可用，不伪造余额。
-
-> [!NOTE]
-> 外接模型的能力、价格和上下文限制由对应供应商决定。Open Pet Office 只负责路由、展示与任务协作。
-
-## 桌面交互
-
-| 操作 | 行为 |
-| --- | --- |
-| 悬停桌宠 | 显示输入与任务动态快捷入口 |
-| 左键桌宠 | 打开分页详情：概览、工作、团队、形象、设置 |
-| 右键桌宠 | 召唤/隐藏成员、切换项目或退出 |
-| 点击实时任务卡 | 打开对应 Codex 任务 |
-| 点击桌面空白 / `Esc` | 收起当前菜单或面板 |
-| 隐藏主管 | 最小化到系统托盘，后台任务继续 |
-| 退出 Pet Office | 真正结束进程 |
-
-还支持迷你模式、80%–140% 缩放、减少动画、开机自启，以及全局显示/隐藏快捷键。
-
-## Petdex 形象与动画
-
-Open Pet Office 兼容 Petdex 标准 8×9 / 8×11 spritesheet，并会自动检测每一行实际存在的动画帧，避免播放空帧或错位。
-
-```powershell
-npx petdex install boba
-```
-
-安装后在“形象”页刷新即可选择。项目不捆绑第三方皮肤；下载和公开分发前请确认皮肤作者及底层 IP 的许可。
-
-## 架构
+## 从一句话到团队交付
 
 ```mermaid
 flowchart LR
-    U[用户] --> P[主管桌宠]
-    P --> A[Codex App Server]
-    P --> D[多 Agent 调度器]
-    D --> W1[工作者 1]
-    D --> W2[工作者 2]
-    D --> W3[工作者 3]
-    D --> W4[工作者 4]
-    W1 & W2 & W3 & W4 --> S[共享项目工作区]
-    C[Codex 会话 JSONL] -. 只读增量监听 .-> M[Session Monitor]
-    M --> P
-    A & D --> O[OpenCodex / 模型供应商]
+    A[输入任务] --> B{开启分工?}
+    B -- 否 --> C[当前 Agent 持续对话]
+    B -- 是 --> D[选择项目 / Agent / 模型]
+    D --> E[主管生成依赖计划]
+    E --> F[用户确认]
+    F --> G[工作者按波次并行执行]
+    G --> H[主管阶段检查]
+    H -->|重试 / 重派| G
+    H --> I[隔离集成与最终复核]
+    I --> J{冲突或高风险变更?}
+    J -- 是 --> K[等待用户处理]
+    J -- 否 --> L[安全回写主项目]
 ```
 
-| 模块 | 作用 |
+关闭分工时，桌宠就是一个轻量的 Codex 会话入口；开启分工后，同一个输入框升级为可恢复的 Mission 工作流。
+
+## 你可以做什么
+
+| 能力 | 使用体验 |
 | --- | --- |
-| Electron 主进程 | 透明窗口、托盘、快捷键、IPC 与任务注册表 |
-| Renderer | 桌宠、输入框、任务中心、项目与模型 UI |
-| App Server Client | 单 Agent 对话、流式事件、审批与提问 |
-| Session Monitor | 只读聚合 Codex Desktop 的 JSONL 会话日志 |
-| Dispatcher | 多 Agent 并行任务与进度映射 |
-| Inbox | 安全复制拖入文件并生成共享相对路径 |
+| **Codex 实时任务** | 只读监听本机 Codex 会话；即使任务从 Codex Desktop 发起，主管也会自动显示任务卡 |
+| **1 + 4 Agent 团队** | 一名主管加最多四名工作者，每只桌宠可独立选择模型 |
+| **持久化 Mission** | 依赖图、执行波次、结构化报告、主管复核、失败重派和重启恢复 |
+| **隔离工作区** | 干净 Git 使用 worktree；脏 Git 和非 Git 项目使用快照副本 |
+| **项目与会话** | 新建、继续、重置上下文；项目重命名、归档、恢复、筛选和附件清理 |
+| **审批与提问** | 在铃铛任务中心处理命令批准、用户问题和冲突，不必寻找原始窗口 |
+| **文件拖放** | 把文件拖给桌宠，相当于复制到项目 `inbox/` 并附加相对路径 |
+| **模型与额度** | 读取 Codex 账户 5 小时 / 每周额度；第三方供应商支持时显示余额 |
+| **Petdex 形象** | 内置多套动画形象，也可以跳转 Petdex 发现更多桌宠 |
+| **桌面可靠性** | 多显示器、全屏避让、托盘、全局快捷键、通知分级和减少动画 |
 
-## 安装与运行
+## 实时状态，不打断工作
 
-### 前置条件
+主管桌宠下方的任务卡会显示当前模型、任务摘要、执行阶段和最新安全进度。多个任务同时运行时，卡片显示最近更新的一项和额外任务数量；点击即可回到对应 Codex 任务。
 
-- Windows 10/11
-- Node.js 18+
-- Codex CLI 0.155 或更高版本
-- 可选：[OpenCodex](https://github.com/lidge-jun/opencodex)，用于接入 DeepSeek 等第三方模型
+铃铛任务中心统一展示：
 
-### 从源码运行
+- **需要处理**：审批、回答、冲突和恢复确认
+- **进行中**：Codex Desktop、单 Agent 对话和多 Agent Mission
+- **最近完成**：完成、中断、失败和取消的准确结果
+
+任务动态只展示脱敏、截断后的摘要，不会把完整命令输出、系统提示词或密钥放到桌面上。
+
+## 多模型协作
+
+Open Pet Office 以 Codex 为会话和执行入口，通过 OpenCodex 接入其他兼容模型。每只桌宠都可以独立切换模型；主管规划时会参考模型的代码、视觉、长上下文、速度与成本标签，并给出参与者建议，最终选择仍由你确认。
+
+| 模型来源 | 接入方式 | 额度显示 |
+| --- | --- | --- |
+| OpenAI / Codex | Codex 登录 | 账户级 5 小时与每周剩余比例 |
+| DeepSeek、GLM 等 | OpenCodex Provider | 供应商提供接口时显示余额，否则明确标记不可用 |
+| 其他 Codex 可见模型 | OpenCodex 自定义配置 | 自动进入模型目录，可为每个 Agent 单独选择 |
+
+## Mission 如何保护项目
+
+Mission 将计划和审查记录保存在项目的 `.pet-office/` 中，把运行时副本和完整日志放在 `~/.pet-office/runtime/`。工作者只能修改自己的隔离环境；已接受的成果先进入集成区，主管终审后才准备回写。
+
+以下情况会暂停并等待用户：
+
+- 主项目在 Mission 期间发生变化
+- 多名工作者修改同一个文件并产生冲突
+- 删除文件、修改计划外路径或出现批量二进制变更
+- 节点连续失败、依赖无法满足或应用异常退出
+
+更多实现细节见 [架构说明](docs/ARCHITECTURE.md)。
+
+## 项目文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [快速上手](docs/GETTING_STARTED.md) | 安装、第一次对话、Mission、文件拖放和常见问题 |
+| [架构说明](docs/ARCHITECTURE.md) | 模块、Mission 生命周期、隔离策略、本地数据与安全边界 |
+| [路线图](docs/ROADMAP.md) | 已完成版本和下一阶段方向 |
+| [更新日志](CHANGELOG.md) | 各版本新增与修复 |
+| [贡献指南](CONTRIBUTING.md) | 本地开发、测试要求和 PR 规范 |
+| [安全策略](SECURITY.md) | 私密报告安全问题的渠道 |
+
+## 从源码运行
 
 ```powershell
 git clone https://github.com/Gu-kai-lei/Open-Pet-Office.git
 cd Open-Pet-Office
 npm install
+npm test
 npm start
 ```
 
-### 测试与构建
+构建 Windows portable：
 
 ```powershell
-npm test
 npm run dist
 ```
 
-便携版输出到 `dist/Pet-Office-0.13.0-portable.exe`。打包版运行后，设置中的开机自启才会生效。未配置签名证书时仍能构建，但设置页会明确显示“未检测到有效签名”。
+测试覆盖会话聚合、日志半行与轮换、状态生命周期、敏感内容脱敏、铃铛竞态、文件收件箱、会话恢复、Mission 依赖与隔离，以及 v0.12 / v0.13 的产品契约。
 
-## 隐私与安全边界
+## 隐私与安全
 
 - 会话监控严格只读，不修改、移动或归档 Codex 日志。
-- API Key、Authorization、token、密码等内容在桌面显示前会被遮蔽。
-- 不显示完整系统提示词或完整工具输出。
-- 单 Agent 使用 `workspace-write + on-request`。
-- 多 Agent 工作者使用 `workspace-write` 沙箱，不能自行提权。
-- API Key 不写入仓库；OpenCodex 管理令牌仅从本机读取。
-- 删除等敏感操作继续遵循 Codex 的审批准则。
+- API Key、Authorization、token、密码等内容在桌面和崩溃记录中自动遮蔽。
+- 单 Agent 继续遵循 Codex 的沙箱和审批准则。
+- 多 Agent 工作者只能写各自的隔离环境。
+- 崩溃报告只保存在本机，不自动上传遥测。
+- 拖入文件采用复制，不移动或删除源文件。
 
-发现安全问题请阅读 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中粘贴密钥或私人日志。
+发现安全问题请通过 [GitHub Security Advisory](https://github.com/Gu-kai-lei/Open-Pet-Office/security/advisories/new) 私密报告。
 
-## 开发与贡献
+<details>
+<summary><strong>当前限制</strong></summary>
 
-```powershell
-npm install
-npm test
-npm start
-```
-
-测试覆盖：会话聚合、半行与轮换、状态生命周期、脱敏、铃铛竞态、文件收件箱、会话恢复和 App Server 进度映射。提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 当前限制
-
-- 当前优先支持 Windows，尚未适配 macOS 和 Linux。
-- 单 Agent 已使用 Codex App Server；多 Agent 分工仍通过 Codex CLI 并行执行。
+- 当前优先支持 Windows 10/11，尚未适配 macOS 和 Linux。
+- 单 Agent 使用 Codex App Server；多 Agent 工作者目前仍由 Codex CLI 并行执行。
 - Session Monitor 依赖 Codex 本地 JSONL 格式，Codex 升级后可能需要同步适配。
-- Codex 暂无公开稳定接口让第三方应用直接创建桌面端侧栏项目；项目目录仍是权威工作区。
-- `codex://threads/<id>` 会话级深链属于实验性能力。
-- Petdex 皮肤需要在本机安装，暂不支持应用内下载。
+- `codex://threads/<id>` 会话深链属于实验性能力。
+- Petdex 形象暂不支持在应用内直接下载。
+- 当前公开 portable 未配置 Windows 代码签名证书。
 
-## 路线图
+</details>
 
-- [ ] 统一单 Agent 与多 Agent 的 App Server 任务模型
-- [ ] 项目级共享记忆检索与可视化
-- [ ] 更完整的 Agent 间消息、依赖与讨论视图
-- [ ] 更多供应商配额适配器与预算策略
-- [x] GitHub Release 更新检查与可选代码签名发布
-- [ ] 可选的跨平台支持
+## 参与项目
+
+Bug、交互问题和新场景都欢迎反馈。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，并确保截图和日志中不含 API Key、访问令牌或私人会话内容。
+
+- [报告 Bug](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new?template=bug_report.yml)
+- [提出功能建议](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new?template=feature_request.yml)
+- [查看路线图](docs/ROADMAP.md)
 
 ## 致谢与商标说明
 
@@ -307,4 +192,4 @@ Open Pet Office 是社区项目，与 OpenAI、Petdex、模型供应商及第三
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Gu-kai-lei

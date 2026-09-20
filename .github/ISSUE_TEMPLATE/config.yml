@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: 使用指南与常见问题
+    url: https://github.com/Gu-kai-lei/Open-Pet-Office/blob/main/docs/GETTING_STARTED.md
+    about: 安装、首次使用和常见问题请先查看这里
   - name: Security vulnerability
     url: https://github.com/Gu-kai-lei/Open-Pet-Office/security/advisories/new
     about: 请通过私密渠道报告安全问题

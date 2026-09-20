@@ -27,7 +27,8 @@ body:
     id: version
     attributes:
       label: Open Pet Office 版本
-      placeholder: 例如 0.10.0
+      description: 可在主管桌宠 → 设置 → 版本与可靠性中查看。
+      placeholder: 例如 0.13.0
     validations:
       required: true
   - type: input
@@ -39,6 +40,11 @@ body:
     attributes:
       label: 环境信息
       description: Windows 版本、Node.js 版本、模型与必要的脱敏日志。
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图或脱敏日志
+      description: 可拖入截图或粘贴设置页“连接诊断”的结果。请勿上传完整会话日志。
   - type: checkboxes
     id: safety
     attributes:

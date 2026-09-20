@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Open Pet Office</title>
+  <desc id="desc">A warm golden desktop pet with a terminal face and crown.</desc>
+  <defs>
+    <linearGradient id="body" x1="28" y1="20" x2="132" y2="144" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD77A"/>
+      <stop offset="1" stop-color="#E99621"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#6A3C00" flood-opacity=".24"/>
+    </filter>
+  </defs>
+  <path d="M67 23 76 8l9 15 14-8-2 20H65l2-12Z" fill="#FFB21F" stroke="#6C4314" stroke-width="4" stroke-linejoin="round"/>
+  <circle cx="72" cy="14" r="3.5" fill="#FFF4C6"/>
+  <circle cx="89" cy="14" r="3.5" fill="#FFF4C6"/>
+  <rect x="27" y="31" width="106" height="106" rx="43" fill="url(#body)" stroke="#6C4314" stroke-width="5" filter="url(#shadow)"/>
+  <rect x="45" y="54" width="70" height="52" rx="16" fill="#20232D" stroke="#FFF0C0" stroke-opacity=".42" stroke-width="3"/>
+  <path d="m62 72 11 9-11 9" fill="none" stroke="#FFF7DB" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M82 91h17" stroke="#FFF7DB" stroke-width="7" stroke-linecap="round"/>
+  <path d="M48 129c-9 10-20 9-25 3 10-1 12-9 13-18" fill="none" stroke="#6C4314" stroke-width="5" stroke-linecap="round"/>
+  <path d="M112 129c9 10 20 9 25 3-10-1-12-9-13-18" fill="none" stroke="#6C4314" stroke-width="5" stroke-linecap="round"/>
+  <ellipse cx="59" cy="140" rx="17" ry="8" fill="#E99621" stroke="#6C4314" stroke-width="5"/>
+  <ellipse cx="101" cy="140" rx="17" ry="8" fill="#E99621" stroke="#6C4314" stroke-width="5"/>
+</svg>

@@ -1,305 +1,191 @@
 <div align="center">
+  <img src="docs/assets/brand-mark.svg" width="112" alt="Open Pet Office logo">
 
 # Open Pet Office
 
-### Bring an AI agent team to your Windows desktop
+### Bring your AI agent team to the Windows desktop
 
-Keep one supervisor pet on your desktop and summon up to four workers only when a task needs a team.<br>
-Live Codex tasks, multi-model delegation, project memory, approvals, and attachments in one lightweight desktop surface.
+One supervisor pet receives your work and summons up to four workers when needed.<br>
+Follow live Codex tasks, mix models, run in isolated workspaces, and review every delivery.
 
 [简体中文](README.md) · [English](README_EN.md)
 
-[![CI](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml/badge.svg)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.13.0-f5a623)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
-[![License: MIT](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Gu-kai-lei/Open-Pet-Office?style=flat-square&color=F2A62B)](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Gu-kai-lei/Open-Pet-Office/total?style=flat-square&color=4C9AFF)](https://github.com/Gu-kai-lei/Open-Pet-Office/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/Gu-kai-lei/Open-Pet-Office/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square&logo=windows11)](#download-and-quick-start)
+[![License](https://img.shields.io/github/license/Gu-kai-lei/Open-Pet-Office?style=flat-square&color=3DA639)](LICENSE)
 
+**[Download for Windows](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest)** · [Quick start](docs/GETTING_STARTED_EN.md) · [Report an issue](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new/choose)
 </div>
 
-![Open Pet Office product UI: supervisor, delegation, and activity center](docs/assets/hero-v2.png)
-
-<p align="center"><sub>Supervisor and quota · Multi-agent delegation · Approvals and live activity</sub></p>
+![Open Pet Office: supervisor pet, multi-agent delegation, and live activity center](docs/assets/hero-v2.png)
 
 > [!IMPORTANT]
-> This is an early Windows preview. It can already handle real work, but APIs, data formats, and interactions may still evolve quickly.
+> Open Pet Office is an early Windows preview. It already handles real projects, while its UI, protocols, and data model continue to evolve.
 
-### v0.13.0: desktop experience and release reliability
+## Why Open Pet Office?
 
-- Follow the cursor, stay on the primary display, or target a specific monitor, with safe viewport clamping after display changes.
-- Avoid fullscreen apps by moving the supervisor to a corner, hiding the overlay, or leaving it unchanged.
-- Choose quiet, standard, or detailed notifications without stopping live task state updates.
-- Use rebuilt attachment cards, font sizing and font choices, keyboard navigation, visible focus, and screen-reader announcements.
-- Keep redacted crash reports local and check GitHub Releases for updates from the settings page.
-- Portable builds use real Windows signing when `CSC_LINK` / `CSC_KEY_PASSWORD` are provided and report the detected signature status.
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🐾 Collaboration you can see</h3>
+      <p>The supervisor stays on your desktop. Workers appear only when a task needs them, with clear thinking, working, waiting, failure, and completion states.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🧠 A real supervisor loop</h3>
+      <p>The supervisor plans dependencies, dispatches work in waves, reviews each stage, retries or reassigns failures, and performs the final review.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🔒 Project-safe execution</h3>
+      <p>Every worker runs in an isolated worktree or snapshot. Conflicts, deletions, and out-of-scope writes pause instead of overwriting your files.</p>
+    </td>
+  </tr>
+</table>
 
-### v0.12.0: project and session workspace
+## Download and quick start
 
-- Create, continue, and reset agent context from a project session list.
-- Rename, archive, restore, or unregister projects without deleting source folders.
-- Filter the task center by project and pin any live task or Mission card.
-- See code, vision, long-context, speed, and cost capability labels for routed models.
-- Let Pet Office recommend participants while keeping Agent, model, and plan confirmation under user control.
+1. Download `Pet-Office-*-portable.exe` from the [latest Release](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest).
+2. Install and sign in to Codex CLI 0.155 or newer.
+3. Run the app, hover over the supervisor pet, and click the compose icon.
+4. Send a simple task directly, or enable Delegation for a project, agents, and models.
 
-### v0.11.0: a real supervisor agent
+The public build is currently unsigned, so Windows SmartScreen may show an unknown-publisher warning. The Release page includes a SHA-256 digest for verification.
 
-- Delegation is now a persistent Mission with a dependency plan that requires confirmation before execution.
-- Workers run in dependency waves, followed by supervisor acceptance, retry, reassignment, or failure decisions.
-- Clean Git projects use isolated worktrees; dirty Git and non-Git projects use isolated snapshots.
-- Structured reports and change manifests replace raw response concatenation.
-- Conflicts, project drift, deletions, and out-of-scope changes pause before write-back.
-- Mission dependencies, retries, recovery, and final review appear in the activity center.
+Want third-party models? The optional [OpenCodex](https://github.com/lidge-jun/opencodex) layer can route DeepSeek, GLM, and other providers into Codex. See the [getting started guide](docs/GETTING_STARTED_EN.md) for details.
 
-## What it is
-
-Open Pet Office is not just a desktop-pet skin. It is a **visual desktop collaboration layer for Codex and multi-model agents**.
-
-- A single supervisor stays visible during normal use.
-- Simple prompts go directly to one agent, much like the native Codex pet experience.
-- Delegation mode lets the supervisor split work and summon parallel workers.
-- Every pet may use a different model while sharing the same project workspace.
-- Tasks started from either Pet Office or Codex Desktop appear as live cards that jump back to the original thread.
-
-## Feature map
-
-| Desktop experience | Agent collaboration | Projects and safety |
-| --- | --- | --- |
-| 🐾 Transparent always-on-top pets | 🧠 1 supervisor + up to 4 workers | 📁 Shared project workspace |
-| 🖱️ Dragging with saved positions | ⚡ Dependency-wave execution | 📝 Missions / project memory |
-| 💬 Inline expanding composer | 🔀 Per-pet model selection | 📎 Drag-and-drop inbox |
-| 🔔 Live task cards and activity center | 🧩 Supervisor planning and synthesis | ✅ Command, file, and permission approvals |
-| 🎨 Petdex animated appearances | 🔗 One-click return to Codex | 🔒 Redaction and sandboxing |
-| 📊 Quota and local usage views | 🌐 OpenCodex model routing | 💾 History and conversation recovery |
-
-## From prompt to team delivery
-
-```text
-Prompt
-  │
-  ├─ Delegation off ─→ Selected pet works alone ─→ Live Codex thread
-  │
-  └─ Delegation on ─→ Choose project / agents / models
-                               │
-                               ▼
-                     Supervisor plans the work
-                               │
-                    ┌──────────┼──────────┐
-                    ▼          ▼          ▼
-                 Worker A   Worker B   Worker C   …up to 4
-                    └──────────┼──────────┘
-                               ▼
-                    Shared files, memory, results
-                               │
-                               ▼
-                    Supervisor returns a synthesis
-```
-
-### Single-agent mode: direct by default
-
-1. Hover over a pet and click its single input button.
-2. The button smoothly expands into the composer in place.
-3. Leave Delegation off and press Enter—there is no extra confirmation.
-4. A live card reports analysis, commands, files, replies, or pending input.
-5. Click the card to open the matching Codex Desktop task.
-
-### Multi-agent mode: a team only when you need one
-
-1. Turn on Delegation from the right side of the composer.
-2. Select an existing project or create one from the project picker.
-3. Choose participating agents and a model for each agent.
-4. The supervisor creates a wave-based dependency plan for confirmation.
-5. Every wave is reviewed; a failed node may be retried or reassigned once.
-6. Accepted changes are integrated and reviewed in isolation before safe write-back.
-
-## Live tasks and the activity center
-
-Open Pet Office incrementally and read-only monitors local `~/.codex/sessions` logs. A task does not have to originate in Pet Office to appear on the desktop.
-
-| Source | What is surfaced |
-| --- | --- |
-| Codex Desktop / Work Desktop | Root task, model, stage, latest safe progress |
-| Native Codex quick chat | Conversation task and current state |
-| IDE extension / CLI | User sessions and execution stages |
-| Pet Office single agent | Streaming replies, approvals, questions, results |
-| Pet Office delegation | Worker progress and supervisor synthesis |
-
-When several tasks are active, the supervisor card shows the most recently updated one plus an “N more” count. The bell opens one activity center grouped into Needs attention, In progress, and Recent.
-
-### Status feedback
-
-| State | Desktop feedback |
-| --- | --- |
-| Idle | Gentle idle or skin-specific animation |
-| Analyzing | Task summary and reasoning stage |
-| Running command | Safely truncated command summary |
-| Editing files | File stage and redacted path summary |
-| Needs attention | Approval or agent-question alert |
-| Completed | Short-lived completion badge and celebration |
-| Aborted | Gray stop badge—never a false green success |
-| Disconnected | Unknown/disconnected state instead of permanent “working” |
-
-## Drop files onto an agent
-
-Drag files from File Explorer directly onto any pet:
-
-- Files are copied into the current project's `inbox/`.
-- The composer opens and shows attachment chips.
-- Workspace-relative paths are included with the prompt.
-- Both single-agent and delegation modes support attachments.
-- If no project exists, an upload project is created for the current date.
-- Up to 20 files per drop and 200 MB per file.
-
-Whether a model can understand images, PDFs, or video depends on that model and its available tools.
-
-## Projects, memory, and communication
-
-```text
-<project>/
-├─ inbox/        # Dropped attachments
-└─ .pet-office/
-   ├─ MEMORY.md  # Shared project memory
-   └─ missions/  # Plans, events, messages, reviews, and artifacts
-```
-
-- Each worker uses an isolated worktree or snapshot to avoid concurrent overwrites.
-- Each model can keep its own conversation while project files and memory remain shared.
-- Interrupted Missions are recoverable after restart without blindly repeating accepted work.
-- The `bridge/` protocol lets a Codex main thread dispatch work and collect summaries.
-
-## Models and quota
-
-Open Pet Office reads the OpenCodex model catalog and allows independent model selection per pet.
-
-- GPT/Codex login models show account-level five-hour and weekly remaining percentages.
-- API models such as DeepSeek show provider balance when an endpoint exists, otherwise local accumulated usage.
-- Each pet can have a token budget cap.
-- If OpenCodex is unavailable, the UI reports the model or quota as unavailable instead of inventing a value.
-
-> [!NOTE]
-> Capabilities, pricing, and context limits belong to each provider. Open Pet Office handles routing, display, and collaboration.
-
-## Desktop interactions
-
-| Action | Result |
-| --- | --- |
-| Hover a pet | Reveal composer and activity shortcuts |
-| Left-click | Open paged details: Overview, Work, Team, Appearance, Settings |
-| Right-click | Summon/hide workers, switch project, or exit |
-| Click a live task card | Open the matching Codex task |
-| Click empty desktop / press `Esc` | Dismiss the active menu or panel |
-| Hide the supervisor | Minimize to tray while background work continues |
-| Exit Pet Office | Actually terminate the process |
-
-Mini mode, 80%–140% scaling, reduced motion, startup launch, and global show/hide shortcuts are also supported.
-
-## Petdex appearances and animation
-
-Open Pet Office supports standard Petdex 8×9 and 8×11 spritesheets. It detects non-empty frames per animation row to avoid blank or misaligned playback.
-
-```powershell
-npx petdex install boba
-```
-
-Refresh the Appearance page after installation. The project does not bundle third-party skins; verify the skin author's and underlying IP owner's permissions before redistribution.
-
-## Architecture
+## From one prompt to a reviewed delivery
 
 ```mermaid
 flowchart LR
-    U[User] --> P[Supervisor pet]
-    P --> A[Codex App Server]
-    P --> D[Multi-agent dispatcher]
-    D --> W1[Worker 1]
-    D --> W2[Worker 2]
-    D --> W3[Worker 3]
-    D --> W4[Worker 4]
-    W1 & W2 & W3 & W4 --> S[Shared project workspace]
-    C[Codex session JSONL] -. read-only incremental monitor .-> M[Session Monitor]
-    M --> P
-    A & D --> O[OpenCodex / model providers]
+    A[Enter a task] --> B{Delegate?}
+    B -- No --> C[Continue with one agent]
+    B -- Yes --> D[Choose project / agents / models]
+    D --> E[Supervisor creates dependency plan]
+    E --> F[User confirms]
+    F --> G[Workers execute in parallel waves]
+    G --> H[Supervisor reviews the wave]
+    H -->|Retry / reassign| G
+    H --> I[Integrate and perform final review]
+    I --> J{Conflict or risky change?}
+    J -- Yes --> K[Wait for user]
+    J -- No --> L[Write back safely]
 ```
 
-| Module | Responsibility |
+With Delegation off, the pet is a lightweight entry point to a persistent Codex conversation. With Delegation on, the same composer becomes a recoverable Mission workflow.
+
+## What you get
+
+| Capability | Experience |
 | --- | --- |
-| Electron main process | Transparent window, tray, shortcuts, IPC, task registry |
-| Renderer | Pets, composer, activity center, project and model UI |
-| App Server client | Single-agent threads, streaming events, approvals, questions |
-| Session Monitor | Read-only aggregation of Codex Desktop JSONL sessions |
-| Dispatcher | Parallel workers and progress mapping |
-| Inbox | Safe attachment copying and shared relative paths |
+| **Live Codex tasks** | Read-only monitoring of local Codex sessions, including work started directly in Codex Desktop |
+| **1 + 4 agent team** | One supervisor and up to four workers, each with its own model |
+| **Persistent Missions** | Dependency graph, execution waves, structured reports, stage reviews, reassignment, and restart recovery |
+| **Isolated workspaces** | Git worktrees for clean repositories; snapshots for dirty Git and non-Git projects |
+| **Projects and sessions** | Create, continue, or reset context; rename, archive, restore, filter, and clean attachments |
+| **Approvals and questions** | Handle command approvals, agent questions, conflicts, and recovery from one activity center |
+| **File drop** | Drop files onto a pet to copy them into the project `inbox/` and attach relative paths |
+| **Models and quota** | Codex five-hour and weekly limits, plus provider balances when APIs are available |
+| **Petdex appearances** | Multiple animated pets, with a direct route to discover more on Petdex |
+| **Desktop reliability** | Multiple displays, fullscreen avoidance, tray controls, shortcuts, notification levels, and reduced motion |
 
-## Install and run
+## Live status without interruption
 
-### Requirements
+The supervisor's live card shows the active model, task summary, current stage, and latest safe progress. With several tasks running, it shows the most recently updated task and the remaining count. Click it to return to the matching Codex task.
 
-- Windows 10/11
-- Node.js 18+
-- Codex CLI 0.155 or newer
-- Optional: [OpenCodex](https://github.com/lidge-jun/opencodex) for providers such as DeepSeek
+The bell activity center brings together:
 
-### Run from source
+- **Needs attention:** approvals, answers, conflicts, and recovery decisions
+- **In progress:** Codex Desktop work, single-agent chats, and Missions
+- **Recently finished:** accurate completion, interruption, failure, and cancellation states
+
+Desktop updates are redacted and truncated. Full command output, system prompts, tokens, and secrets never belong in a pet bubble.
+
+## Multi-model collaboration
+
+Open Pet Office uses Codex as the conversation and execution surface, with OpenCodex as an optional router for compatible providers. Every pet can select a different model. The supervisor can use code, vision, long-context, speed, and cost tags to recommend participants, while you retain final control over agents and models.
+
+| Model source | Connection | Quota display |
+| --- | --- | --- |
+| OpenAI / Codex | Codex sign-in | Account-level five-hour and weekly remaining percentage |
+| DeepSeek, GLM, and others | OpenCodex provider | Balance when the provider exposes a compatible API |
+| Other Codex-visible models | Custom OpenCodex config | Added to the model catalog and selectable per agent |
+
+## How Missions protect your project
+
+Mission plans and review records live under `.pet-office/` in the project. Runtime copies and complete logs live under `~/.pet-office/runtime/`. Workers write only to their own isolated environments; accepted work enters an integration workspace before the supervisor prepares write-back.
+
+These conditions pause for user action:
+
+- The main project changes while a Mission is running
+- Several workers create a conflicting edit to the same file
+- A task deletes files, writes outside its plan, or changes many binaries
+- A node repeatedly fails, dependencies cannot proceed, or the app exits unexpectedly
+
+Read [Architecture](docs/ARCHITECTURE_EN.md) for the module map, lifecycle, storage, and safety boundaries.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [Getting started](docs/GETTING_STARTED_EN.md) | Installation, first chat, Missions, file drop, and troubleshooting |
+| [Architecture](docs/ARCHITECTURE_EN.md) | Modules, Mission lifecycle, isolation, local data, and safety boundaries |
+| [Roadmap](docs/ROADMAP_EN.md) | Completed versions and next-stage direction |
+| [Changelog](CHANGELOG.md) | Release additions and fixes |
+| [Contributing](CONTRIBUTING.md) | Local development, tests, and pull request expectations |
+| [Security](SECURITY.md) | Private vulnerability reporting |
+
+## Run from source
 
 ```powershell
 git clone https://github.com/Gu-kai-lei/Open-Pet-Office.git
 cd Open-Pet-Office
 npm install
-npm start
-```
-
-### Test and build
-
-```powershell
-npm test
-npm run dist
-```
-
-The portable build is written to `dist/Pet-Office-0.13.0-portable.exe`. Startup launch is effective for packaged builds. An unsigned build remains supported, but Settings clearly reports that no valid signature was detected.
-
-## Privacy and security boundaries
-
-- Session monitoring is strictly read-only and never moves, archives, or edits Codex logs.
-- API keys, authorization headers, tokens, and passwords are masked before desktop display.
-- Full system prompts and full tool output are never shown on task cards.
-- Single-agent sessions use `workspace-write + on-request`.
-- Multi-agent workers use the `workspace-write` sandbox and cannot elevate themselves.
-- API keys are not stored in the repository; the OpenCodex admin token is read locally.
-- Destructive operations continue to follow Codex approval rules.
-
-See [SECURITY.md](SECURITY.md) for private vulnerability reporting. Never paste secrets or private session logs into a public issue.
-
-## Development and contribution
-
-```powershell
-npm install
 npm test
 npm start
 ```
 
-Tests cover session aggregation, partial lines and rotation, lifecycle state, redaction, activity-panel races, attachment ingestion, conversation recovery, and App Server progress mapping. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes.
+Build the Windows portable executable with `npm run dist`.
 
-## Current limitations
+Tests cover session aggregation, partial and rotated JSONL, lifecycle states, redaction, activity-panel races, file ingestion, conversation recovery, Mission dependency and isolation behavior, and v0.12 / v0.13 product contracts.
 
-- Windows is the current priority; macOS and Linux are not supported yet.
-- Single-agent work uses Codex App Server; delegated workers still run in parallel through Codex CLI.
-- Session Monitor depends on Codex's local JSONL format and may need updates after Codex changes.
-- Codex does not currently expose a stable public API for third-party desktop sidebar project creation; the project directory remains authoritative.
-- Thread deep links through `codex://threads/<id>` are experimental.
-- Petdex skins must be installed locally; in-app downloading is not implemented yet.
+## Privacy and safety
 
-## Roadmap
+- Session monitoring is strictly read-only.
+- API keys, authorization headers, tokens, and passwords are redacted from desktop and crash summaries.
+- Single-agent work keeps Codex sandbox and approval semantics.
+- Mission workers can write only inside their isolated environments.
+- Crash reports remain local and no telemetry is uploaded automatically.
+- File drop copies the source; it never moves or deletes it.
 
-- [ ] One App Server task model for both single and delegated work
-- [ ] Project-memory retrieval and visualization
-- [ ] Richer agent messages, dependencies, and discussion views
-- [ ] More provider quota adapters and budget policies
-- [x] GitHub Release update checks and optional signed releases
-- [ ] Optional cross-platform support
+Report security issues privately through [GitHub Security Advisories](https://github.com/Gu-kai-lei/Open-Pet-Office/security/advisories/new).
+
+<details>
+<summary><strong>Current limitations</strong></summary>
+
+- Windows 10/11 is the current supported platform.
+- Single-agent conversations use Codex App Server; Mission workers currently execute through parallel Codex CLI processes.
+- Session Monitor depends on the local Codex JSONL format.
+- `codex://threads/<id>` is still an experimental deep link.
+- Petdex appearances are discovered in-app but not downloaded in-app yet.
+- The current public portable build has no Windows code-signing certificate.
+
+</details>
+
+## Contributing
+
+Bug reports, interaction problems, and concrete new use cases are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and remove API keys, access tokens, and private conversation content from screenshots or logs.
+
+- [Report a bug](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new?template=bug_report.yml)
+- [Request a feature](https://github.com/Gu-kai-lei/Open-Pet-Office/issues/new?template=feature_request.yml)
+- [View the roadmap](docs/ROADMAP_EN.md)
 
 ## Acknowledgements and trademarks
 
-The interaction design is inspired by the Codex desktop pet, Munder Difflin, and multi-agent orchestration tools. OpenCodex is an optional model-routing layer, and Petdex is an optional appearance ecosystem.
+The interaction design draws inspiration from Codex pets, Munder Difflin, and multi-agent orchestration tools. OpenCodex is the optional model-routing layer, and Petdex is the optional appearance ecosystem.
 
-Open Pet Office is a community project and is not officially affiliated with OpenAI, Petdex, model providers, or third-party skin creators. Codex, DeepSeek, and other names belong to their respective owners.
+Open Pet Office is a community project with no official affiliation with OpenAI, Petdex, model providers, or third-party pet artists. Codex, DeepSeek, and other names belong to their respective owners.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Gu-kai-lei
