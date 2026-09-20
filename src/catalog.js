@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const { CATALOG_FILE, log } = require('./config');
+const { inferCapabilities } = require('./model-capabilities');
 
 let cache = { at: 0, models: [] };
 
@@ -19,6 +20,7 @@ function loadModels(force = false) {
         slug: m.slug,
         name: m.display_name || m.slug,
         provider: m.provider || m.provider_id || providerOf(m.slug),
+        capabilities: inferCapabilities(m),
       }));
     if (models.length) cache = { at: now, models };
   } catch (e) {

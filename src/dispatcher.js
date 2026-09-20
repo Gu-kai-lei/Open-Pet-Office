@@ -39,20 +39,27 @@ function pump() {
 function run(t) {
   return new Promise(resolve => {
     try {
-      ensureProjectDirs(t.projectDir);
+      if (!t.skipLegacyDirs) ensureProjectDirs(t.projectDir);
+      else fs.mkdirSync(t.projectDir, { recursive: true });
     } catch (e) {
       emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '项目目录创建失败: ' + e.message });
       return resolve();
     }
-    const briefPath = path.join(t.projectDir, 'tasks', t.id + '.brief.md');
-    const outPath = path.join(t.projectDir, 'tasks', t.id + '.result.md');
-    const brief = (t.brief || '(无简报)') + '\n\n---\n工作约定：\n- 先读 HIVE.md 与 MEMORY.md，遵守其中约定。\n- 需要修改项目时直接在共享工作区完成。\n- 最终回复必须包含完整结果或工作报告；系统会自动保存为 tasks/' + t.id + '.result.md。\n- 有对团队有用的结论时，追加到 MEMORY.md。\n';
+    const briefPath = t.briefPath || path.join(t.projectDir, 'tasks', t.id + '.brief.md');
+    const outPath = t.resultPath || path.join(t.projectDir, 'tasks', t.id + '.result.md');
+    const brief = t.missionId
+      ? (t.brief || '(无简报)') + '\n\n---\nMission 工作约定：\n- 只能在当前隔离工作区内工作。\n- 不要修改 .pet-office 目录。\n- 遵守简报中的文件范围、交付物和验证要求。\n- 最终输出必须符合系统提供的 JSON Schema。\n'
+      : (t.brief || '(无简报)') + '\n\n---\n工作约定：\n- 先读 HIVE.md 与 MEMORY.md，遵守其中约定。\n- 需要修改项目时直接在共享工作区完成。\n- 最终回复必须包含完整结果或工作报告；系统会自动保存为 tasks/' + t.id + '.result.md。\n- 有对团队有用的结论时，追加到 MEMORY.md。\n';
+    fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
     try { fs.writeFileSync(briefPath, brief, 'utf8'); } catch (e) {
       emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '简报写入失败: ' + e.message });
       return resolve();
     }
-    const prompt = 'Read tasks/' + t.id + '.brief.md in this workspace and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.';
+    const prompt = t.prompt || ('Read ' + JSON.stringify(briefPath) + ' and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.');
     const args = ['/c', 'codex', 'exec', '--json', '--skip-git-repo-check', '-C', t.projectDir, '--sandbox', 'workspace-write', '-o', outPath];
+    if (t.threadSource) args.push('--thread-source', t.threadSource);
+    if (t.outputSchemaPath) args.push('--output-schema', t.outputSchemaPath);
     if (t.model) args.push('-m', t.model);
     args.push(prompt);
     emit({ type: 'started', taskId: t.id, model: t.model || '(codex默认)' });
@@ -98,7 +105,7 @@ function run(t) {
           latestTokens = sessionTokens;
           emit({ type: 'usage', taskId: t.id, tokens: sessionTokens });
         }
-        emit({ type: code === 0 ? 'done' : 'failed', taskId: t.id, exitCode: code, elapsedMs: Date.now() - startedAt });
+        emit({ type: code === 0 ? 'done' : 'failed', taskId: t.id, exitCode: code, elapsedMs: Date.now() - startedAt, resultPath: outPath });
       }
       resolve();
     });
@@ -197,6 +204,29 @@ function cancel(taskId) {
   return true;
 }
 
+function stopProcessTree(runtime) {
+  if (!runtime || !runtime.child) return;
+  runtime.cancelled = true;
+  try { runtime.child.kill(); } catch {}
+  if (process.platform === 'win32' && runtime.child.pid) {
+    try {
+      const killer = spawn('taskkill.exe', ['/PID', String(runtime.child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      if (killer.unref) killer.unref();
+    } catch (error) { log('shutdown taskkill: ' + error.message); }
+  }
+}
+
+function shutdown() {
+  const queued = queue;
+  queue = [];
+  for (const task of queued) emit({ type: 'cancelled', taskId: task.id, reason: 'app-exit' });
+  for (const runtime of running.values()) stopProcessTree(runtime);
+  running.clear();
+}
+
 function snapshot() {
   return { active: [...running.keys()], queued: queue.map(t => t.id), activeCount };
 }
@@ -204,6 +234,7 @@ function snapshot() {
 module.exports = {
   startTask,
   cancel,
+  shutdown,
   setConcurrency,
   setEmitter,
   ensureProjectDirs,

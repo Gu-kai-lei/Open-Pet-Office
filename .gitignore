@@ -13,5 +13,9 @@ morph-test.png
 poses.png
 pet-office-*.png
 pet-office-*.state.json
+reg-*.png
+reg-*.state.json
+v0*-*.png
+v0*-*.state.json
 boba-inline-composer.png
 *.log

@@ -109,4 +109,67 @@ function ingestFiles({ paths, projectPath, maxFiles = MAX_FILES, maxBytes = MAX_
   return result;
 }
 
-module.exports = { ingestFiles, fileKind, safeFileName, MAX_FILES, MAX_FILE_BYTES };
+async function ingestFilesAsync({ paths, projectPath, maxFiles = MAX_FILES, maxBytes = MAX_FILE_BYTES, onProgress } = {}) {
+  const result = { ok: false, files: [], skipped: [], error: null };
+  if (!projectPath) {
+    result.error = '缺少项目工作区。';
+    return result;
+  }
+  const list = (Array.isArray(paths) ? paths : []).filter(value => typeof value === 'string' && value.trim());
+  if (!list.length) {
+    result.error = '没有收到文件。';
+    return result;
+  }
+  const inbox = path.join(projectPath, 'inbox');
+  try {
+    await fs.promises.mkdir(inbox, { recursive: true });
+  } catch (error) {
+    result.error = '无法创建工作区收件箱：' + error.message;
+    return result;
+  }
+  for (let index = 0; index < list.length; index += 1) {
+    const source = list[index];
+    if (result.files.length >= maxFiles) {
+      result.skipped.push({ path: source, reason: '一次最多接收 ' + maxFiles + ' 个文件' });
+      continue;
+    }
+    let stat;
+    try {
+      stat = await fs.promises.stat(source);
+    } catch {
+      result.skipped.push({ path: source, reason: '文件不存在' });
+      continue;
+    }
+    if (!stat.isFile()) {
+      result.skipped.push({ path: source, reason: '不是文件' });
+      continue;
+    }
+    if (stat.size > maxBytes) {
+      result.skipped.push({ path: source, reason: '超过 ' + Math.round(maxBytes / 1048576) + 'MB' });
+      continue;
+    }
+    const target = uniqueTarget(inbox, safeFileName(source));
+    try {
+      if (onProgress) onProgress({ phase: 'copying', index, total: list.length, name: path.basename(source), size: stat.size });
+      await fs.promises.copyFile(source, target);
+    } catch (error) {
+      result.skipped.push({ path: source, reason: '复制失败：' + error.message });
+      continue;
+    }
+    result.files.push({
+      name: path.basename(target),
+      path: target,
+      relPath: path.relative(projectPath, target).split(path.sep).join('/'),
+      size: stat.size,
+      kind: fileKind(target),
+    });
+    if (onProgress) onProgress({ phase: 'copied', index: index + 1, total: list.length, name: path.basename(target), size: stat.size });
+  }
+  result.ok = result.files.length > 0;
+  if (!result.ok && !result.error) {
+    result.error = result.skipped.length ? '文件无法接收：' + result.skipped[0].reason : '没有收到文件。';
+  }
+  return result;
+}
+
+module.exports = { ingestFiles, ingestFilesAsync, fileKind, safeFileName, MAX_FILES, MAX_FILE_BYTES };

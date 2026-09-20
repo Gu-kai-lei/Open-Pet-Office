@@ -2,7 +2,7 @@
 const fs = require('fs');
 const { ADMIN_TOKEN_FILE, PROXY_BASE, log } = require('./config');
 
-let cache = { at: 0, ok: false, reports: [], error: null };
+let cache = { at: 0, lastSuccessAt: 0, ok: false, stale: false, reports: [], error: null };
 
 async function fetchQuotas(force = false) {
   const now = Date.now();
@@ -11,17 +11,42 @@ async function fetchQuotas(force = false) {
   try {
     token = fs.readFileSync(ADMIN_TOKEN_FILE, 'utf8').trim();
   } catch (e) {
-    cache = { at: now, ok: false, reports: cache.reports || [], error: '无法读取管理令牌: ' + e.message };
+    cache = {
+      at: now,
+      lastSuccessAt: cache.lastSuccessAt || 0,
+      ok: false,
+      stale: !!(cache.reports && cache.reports.length),
+      reports: cache.reports || [],
+      error: '无法读取管理令牌: ' + e.message,
+    };
     return cache;
   }
   try {
-    const res = await fetch(PROXY_BASE + '/api/provider-quotas', { headers: { 'X-OpenCodex-API-Key': token } });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    let res;
+    try {
+      res = await fetch(PROXY_BASE + '/api/provider-quotas', {
+        headers: { 'X-OpenCodex-API-Key': token },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    cache = { at: now, ok: true, error: null, reports: normalize(data.reports || []) };
+    cache = { at: now, lastSuccessAt: now, ok: true, stale: false, error: null, reports: normalize(data.reports || []) };
   } catch (e) {
-    cache = { at: now, ok: false, reports: cache.reports || [], error: e.message };
-    log('quota fetch failed: ' + e.message);
+    const message = e && e.name === 'AbortError' ? '请求超时' : e.message;
+    cache = {
+      at: now,
+      lastSuccessAt: cache.lastSuccessAt || 0,
+      ok: false,
+      stale: !!(cache.reports && cache.reports.length),
+      reports: cache.reports || [],
+      error: message,
+    };
+    log('quota fetch failed: ' + message);
   }
   return cache;
 }

@@ -5,10 +5,15 @@ const STATUS_TEXT = {
   idle: '待命', queued: '排队中', working: '工作中', done: '已完成',
   needs_input: '需要输入', failed: '出错', capped: '达用量上限', cancelled: '已取消', unknown: '状态未知',
 };
+const MISSION_STATUS_TEXT = {
+  planning: '主管规划中', awaiting_confirmation: '等待确认', running: '执行中', reviewing: '主管检查中',
+  needs_input: '需要处理', interrupted: '已中断', completed: '已完成', partially_succeeded: '部分成功', failed: '失败', cancelled: '已取消',
+};
 
 let S = null;
 let delegationOn = false;
 let tasks = [];
+let missions = [];
 let interactions = [];
 let openPanelFor = null;
 let tooltipTimer = null;
@@ -16,6 +21,9 @@ let dragState = null;
 let composerPetId = null;
 let composerCloseTimer = null;
 let composerAttachments = [];
+let diagnosticsReport = null;
+let diagnosticsInFlight = false;
+let fullscreenPetPosition = null;
 let liveTaskHideTimer = null;
 let lastPointer = { x: 0, y: 0 };
 const activitySurface = { state: 'closed', epoch: 0, timer: null, animation: null };
@@ -26,6 +34,8 @@ const bubbleTimers = {};
 const chatStreams = new Map();
 const skinPreviewCache = new Map();
 const previousTaskStatuses = new Map();
+const projectSessionCache = new Map();
+const projectSessionLoading = new Set();
 const TERMINAL_PET_STATUSES = new Set(['done', 'failed', 'cancelled', 'capped', 'unknown']);
 const TERMINAL_TASK_WINDOW_MS = 4000;
 const STATUS_BADGE_MS = 4200;
@@ -63,6 +73,25 @@ function modelName(slug) {
   return record ? record.name : slug;
 }
 
+function capabilityLabels(slug) {
+  const record = modelRecord(slug);
+  const cap = record && record.capabilities;
+  if (!cap) return [];
+  const labels = [];
+  if (cap.code) labels.push('代码');
+  if (cap.vision) labels.push('视觉');
+  if (cap.longContext) labels.push('长上下文');
+  labels.push(cap.speed === 'fast' ? '快速' : (cap.speed === 'deliberate' ? '深度' : '均衡'));
+  labels.push(({ free: '免费', low: '低成本', medium: '中等成本', high: '高成本' })[cap.cost] || '成本未知');
+  return labels;
+}
+
+function capabilityBadges(slug, compact = false) {
+  const labels = capabilityLabels(slug);
+  if (!labels.length) return '<span class="capability-tags muted"><i>能力信息待同步</i></span>';
+  return '<span class="capability-tags' + (compact ? ' compact' : '') + '">' + labels.map(label => '<i>' + esc(label) + '</i>').join('') + '</span>';
+}
+
 function skinRecord(slug) {
   return (S.skins || []).find(skin => skin.slug === slug) || null;
 }
@@ -84,6 +113,30 @@ const SHORTCUT_OPTIONS = [
   ['Alt+Shift+P', 'Alt + Shift + P'],
 ];
 
+function selectOptions(items, selected) {
+  return items.map(item => '<option value="' + esc(item[0]) + '"' + (String(item[0]) === String(selected) ? ' selected' : '') + '>' + esc(item[1]) + '</option>').join('');
+}
+
+function displayOptions(selected) {
+  const fixed = [['cursor', '跟随鼠标所在显示器'], ['primary', '始终使用主显示器']];
+  const displays = ((S.desktop || {}).displays || []).map((display, index) => [String(display.id), display.label || ('显示器 ' + (index + 1))]);
+  return selectOptions([...fixed, ...displays], selected || 'cursor');
+}
+
+function releaseHtml() {
+  const release = S.release || {};
+  const update = release.update;
+  const signature = release.signature || {};
+  const crashes = release.crashes || {};
+  const updateText = !update ? '尚未检查更新'
+    : (!update.ok ? ('检查失败 · ' + (update.error || '未知错误'))
+      : (update.updateAvailable ? ('发现 v' + update.latestVersion) : '已是最新版本'));
+  const signatureText = signature.signed ? '代码签名有效' : (signature.status === 'development' ? '开发模式' : '未检测到有效签名');
+  return '<section class="release-card"><div class="release-head"><span><b>版本与可靠性</b><small>v' + esc(release.currentVersion || '0.13.0') + '</small></span><i class="' + (signature.signed ? 'valid' : '') + '">' + esc(signatureText) + '</i></div>' +
+    '<div class="release-status"><span>' + esc(updateText) + '</span><span>本地崩溃记录 ' + Number(crashes.count || 0) + ' 条</span></div>' +
+    '<div class="button-row"><button class="btn" id="p-check-update">检查更新</button>' + (update && update.ok && update.updateAvailable ? '<button class="btn primary" id="p-open-release">查看新版</button>' : '') + '<button class="btn" id="p-open-crashes">打开崩溃记录</button></div></section>';
+}
+
 function motionReduced() {
   return !!(S && S.settings && S.settings.reducedMotion);
 }
@@ -97,8 +150,18 @@ function applyAppearanceSettings() {
   const settings = S.settings || {};
   document.body.classList.toggle('compact-mode', !!settings.compactMode);
   document.body.classList.toggle('reduce-motion', !!settings.reducedMotion);
+  document.body.classList.toggle('font-rounded', settings.fontFamily === 'rounded');
+  document.body.classList.toggle('font-readable', settings.fontFamily === 'readable');
   document.documentElement.style.setProperty('--pet-scale', appearanceScale().toFixed(3));
+  document.documentElement.style.setProperty('--font-scale', String(Math.max(.9, Math.min(1.25, Number(settings.fontScale) || 1))));
   for (const pet of pets.values()) updateSkinState(pet);
+}
+
+function announce(text) {
+  const region = $('#announcer');
+  if (!region) return;
+  region.textContent = '';
+  requestAnimationFrame(() => { region.textContent = String(text || ''); });
 }
 
 init();
@@ -110,9 +173,11 @@ async function init() {
   S.ui.petPositions = S.ui.petPositions || {};
   delegationOn = !!S.ui.delegationOn;
   tasks = S.tasks || [];
+  missions = S.missions || [];
   interactions = S.interactions || [];
   applyAppearanceSettings();
   buildPets();
+  applyFullscreenMode({ active: !!(S.desktop && S.desktop.fullscreenActive), behavior: S.settings.fullscreenBehavior });
   updateActivityBadge();
   updateLiveTaskCard();
   bindEvents();
@@ -126,6 +191,25 @@ async function init() {
   document.addEventListener('pointercancel', finishPetDrag);
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeOverlays();
+    if (event.key === 'F6') {
+      event.preventDefault();
+      const list = [...pets.values()].map(pet => pet.el).filter(el => !el.classList.contains('hidden-pet'));
+      const index = list.indexOf(document.activeElement);
+      (list[(index + 1) % list.length] || list[0])?.focus();
+    }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 't') {
+      event.preventDefault();
+      openActivity();
+    }
+    if (event.ctrlKey && event.key === 'Enter' && !$('#composer').classList.contains('hidden')) {
+      event.preventDefault();
+      $('#c-send')?.click();
+    }
+    if (event.altKey && event.key.toLowerCase() === 'a' && !$('#composer').classList.contains('hidden')) {
+      event.preventDefault();
+      const toggle = $('#c-delegation');
+      if (toggle) { toggle.checked = !toggle.checked; toggle.dispatchEvent(new Event('change')); }
+    }
   });
   $('#stage').addEventListener('pointerdown', event => {
     if (!event.target.closest('.ui')) {
@@ -170,6 +254,9 @@ function createPet(pet) {
   const hidden = pet.role === 'worker' && S.ui.hiddenPets.includes(pet.id);
   element.className = 'pet ui ' + (pet.role === 'supervisor' ? 'boss' : 'worker') + (hidden ? ' hidden-pet' : '');
   element.id = 'pet-' + pet.id;
+  element.tabIndex = 0;
+  element.setAttribute('role', 'button');
+  element.setAttribute('aria-label', pet.name + '，' + (pet.role === 'supervisor' ? '主管 Agent' : '工作者 Agent'));
   const activityButton = pet.role === 'supervisor'
     ? '<span class="quick-sep"></span><button class="quick-btn activity-btn" data-activity aria-label="任务动态" title="任务动态"><span class="bell-icon" aria-hidden="true"></span><i class="activity-badge hidden">0</i></button>'
     : '';
@@ -207,6 +294,12 @@ function createPet(pet) {
     event.preventDefault();
     event.stopPropagation();
     openMenu(pet.id, event.clientX, event.clientY);
+  });
+  element.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    if (event.shiftKey) openComposer(pet.id, delegationOn);
+    else openPanel(pet.id);
   });
   element.addEventListener('mouseenter', () => {
     clearTimeout(tooltipTimer);
@@ -280,10 +373,57 @@ function finishPetDrag(event) {
   dragState = null;
 }
 
+function clampPetsToViewport() {
+  for (const pet of pets.values()) {
+    const rect = pet.el.getBoundingClientRect();
+    const scale = appearanceScale();
+    const width = Math.max(70, rect.width || 116 * scale);
+    const height = Math.max(90, rect.height || 166 * scale);
+    pet.el.style.left = Math.max(4, Math.min(innerWidth - width - 4, parseFloat(pet.el.style.left) || 4)) + 'px';
+    pet.el.style.top = Math.max(4, Math.min(innerHeight - height - 4, parseFloat(pet.el.style.top) || 4)) + 'px';
+  }
+  positionLiveTaskCard();
+}
+
+function applyFullscreenMode(payload = {}) {
+  const active = !!payload.active;
+  const behavior = payload.behavior || (S.settings || {}).fullscreenBehavior || 'corner';
+  document.body.classList.toggle('fullscreen-corner', active && behavior === 'corner');
+  const boss = pets.get('supervisor');
+  if (!boss) return;
+  if (active && behavior === 'corner') {
+    if (!fullscreenPetPosition) fullscreenPetPosition = { left: boss.el.style.left, top: boss.el.style.top };
+    closeOverlays();
+    requestAnimationFrame(() => {
+      const rect = boss.el.getBoundingClientRect();
+      boss.el.style.left = Math.max(8, innerWidth - rect.width - 12) + 'px';
+      boss.el.style.top = Math.max(8, innerHeight - rect.height - 12) + 'px';
+    });
+  } else if (fullscreenPetPosition) {
+    boss.el.style.left = fullscreenPetPosition.left;
+    boss.el.style.top = fullscreenPetPosition.top;
+    fullscreenPetPosition = null;
+    clampPetsToViewport();
+  }
+}
+
 function bindEvents() {
   window.petOffice.on('task:event', onTaskEvent);
   window.petOffice.on('chat:event', onChatEvent);
   window.petOffice.on('task:snapshot', applyTaskSnapshot);
+  window.petOffice.on('mission:snapshot', payload => {
+    missions = Array.isArray(payload) ? payload : ((payload && payload.missions) || []);
+    S.missions = missions;
+    updateActivityBadge();
+    updateLiveTaskCard();
+    if (activitySurface.state !== 'closed') refreshActivityContents();
+  });
+  window.petOffice.on('mission:done', mission => {
+    const label = mission.status === 'completed' ? 'Mission 已完成' : (mission.status === 'partially_succeeded' ? 'Mission 部分完成' : 'Mission 已结束');
+    bubble('supervisor', label, 9000, mission.status === 'completed' ? 'completion' : 'attention');
+    refreshState();
+    setTimeout(restoreWorkerVisibility, 6000);
+  });
   window.petOffice.on('interaction:update', items => {
     interactions = Array.isArray(items) ? items : [];
     updateActivityBadge();
@@ -321,13 +461,39 @@ function bindEvents() {
     S.quotas = quotas;
     if (openPanelFor) openPanel(openPanelFor);
   });
+  window.petOffice.on('files:progress', progress => {
+    if (!progress || progress.phase !== 'copied' || !composerPetId) return;
+    bubble(composerPetId, '已复制 ' + progress.index + '/' + progress.total + ' · ' + short(progress.name, 36), 2200, 'detail');
+  });
   window.petOffice.on('pet:message', data => bubble('supervisor', data.text, 12000));
-  $('#live-task').onclick = () => {
+  window.petOffice.on('desktop:display', payload => {
+    S.desktop = { ...(S.desktop || {}), ...(payload || {}) };
+    requestAnimationFrame(clampPetsToViewport);
+    if (openPanelFor && panelTabs.get(openPanelFor) === 'settings') openPanel(openPanelFor, 'settings');
+  });
+  window.petOffice.on('desktop:fullscreen', payload => {
+    S.desktop = { ...(S.desktop || {}), fullscreenActive: !!(payload && payload.active) };
+    applyFullscreenMode(payload);
+  });
+  window.petOffice.on('release:update', release => {
+    S.release = release || S.release;
+    if (release && release.update && release.update.updateAvailable) announce('Pet Office 有新版本可用');
+    if (openPanelFor && panelTabs.get(openPanelFor) === 'settings') openPanel(openPanelFor, 'settings');
+  });
+  $('#live-task').onclick = event => {
+    const pin = event.target.closest('[data-live-pin]');
+    if (pin) {
+      event.stopPropagation();
+      setPinnedLiveTask(pin.dataset.livePin);
+      return;
+    }
     const threadId = $('#live-task').dataset.threadId;
-    if (threadId) window.petOffice.openCodex(threadId);
+    if (threadId) openCodexThread(threadId);
     else openActivity();
   };
-  window.addEventListener('resize', positionLiveTaskCard);
+  window.addEventListener('resize', clampPetsToViewport);
+  window.addEventListener('error', event => window.petOffice.reportRendererCrash({ kind: 'renderer-error', message: event.message, stack: event.error && event.error.stack }));
+  window.addEventListener('unhandledrejection', event => window.petOffice.reportRendererCrash({ kind: 'renderer-rejection', message: String(event.reason && (event.reason.stack || event.reason.message) || event.reason) }));
   bindFileDrop();
 }
 
@@ -412,7 +578,7 @@ function onChatEvent(event) {
       task.progressStage = 'report';
       task.updatedAt = Date.now();
     }
-    bubble(pet.id, tail(text.replace(/\s+/g, ' ').trim(), 220) || '正在思考…', 12000);
+    bubble(pet.id, tail(text.replace(/\s+/g, ' ').trim(), 220) || '正在思考…', 12000, 'detail');
     updateLiveTaskCard();
     return;
   }
@@ -423,7 +589,7 @@ function onChatEvent(event) {
   if (event.type === 'needs-input') {
     if (task) task.status = 'waiting_input';
     setStatus(pet, 'needs_input');
-    bubble(pet.id, '需要你的确认或回答', 15000);
+    bubble(pet.id, '需要你的确认或回答', 15000, 'attention');
     updateActivityBadge();
     updateLiveTaskCard();
     return;
@@ -443,13 +609,13 @@ function onChatEvent(event) {
   chatStreams.delete(event.taskId);
   if (event.type === 'done') {
     setStatus(pet, 'done');
-    bubble(pet.id, tail(String(event.text || '').replace(/\s+/g, ' ').trim(), 260) || '完成了 ✔', 15000);
+    bubble(pet.id, tail(String(event.text || '').replace(/\s+/g, ' ').trim(), 260) || '完成了 ✔', 15000, 'completion');
   } else if (event.type === 'cancelled') {
     setStatus(pet, 'cancelled');
-    bubble(pet.id, '已取消', 5000);
+    bubble(pet.id, '已取消', 5000, 'attention');
   } else if (event.type === 'failed') {
     setStatus(pet, 'failed');
-    bubble(pet.id, '出错了：' + (event.error || '任务失败'), 9000);
+    bubble(pet.id, '出错了：' + (event.error || '任务失败'), 9000, 'error');
   }
   updateLiveTaskCard(true);
   refreshState();
@@ -464,8 +630,8 @@ function syncPetTaskStatus() {
       const previous = previousTaskStatuses.get(task.id);
       previousTaskStatuses.set(task.id, task.status);
       if (!previous || previous === task.status) continue;
-      if (task.source === 'desktop' && task.status === 'cancelled') bubble('supervisor', '任务已中断', 5000);
-      if (task.source === 'desktop' && task.status === 'failed') bubble('supervisor', '任务出错：' + short(task.error || task.progress, 80), 6000);
+      if (task.source === 'desktop' && task.status === 'cancelled') bubble('supervisor', '任务已中断', 5000, 'attention');
+      if (task.source === 'desktop' && task.status === 'failed') bubble('supervisor', '任务出错：' + short(task.error || task.progress, 80), 6000, 'error');
     }
     const current = relevant
       .filter(task => ['queued', 'running', 'waiting_input'].includes(task.status))
@@ -505,6 +671,7 @@ async function refreshState() {
   S.ui.hiddenPets = Array.isArray(S.ui.hiddenPets) ? S.ui.hiddenPets : [];
   S.ui.petPositions = S.ui.petPositions || {};
   tasks = S.tasks || [];
+  missions = S.missions || [];
   interactions = S.interactions || [];
   delegationOn = !!S.ui.delegationOn;
   applyAppearanceSettings();
@@ -538,7 +705,7 @@ function onTaskEvent(event) {
       task.updatedAt = Date.now();
     }
     const progressPet = pets.get(event.petId);
-    if (progressPet && event.text) bubble(progressPet.id, short(event.text, 180), 7000);
+    if (progressPet && event.text) bubble(progressPet.id, short(event.text, 180), 7000, 'detail');
     updateLiveTaskCard();
     if (activitySurface.state !== 'closed') refreshActivityContents();
     if (openPanelFor === event.petId) openPanel(event.petId, panelTabs.get(event.petId));
@@ -553,10 +720,10 @@ function onTaskEvent(event) {
     bubble(pet.id, '开工！', 2500);
   } else if (event.type === 'done') {
     setStatus(pet, 'done');
-    bubble(pet.id, '我的部分完成了 ✔', 4000);
+    bubble(pet.id, '我的部分完成了 ✔', 4000, 'completion');
   } else if (event.type === 'failed') {
     setStatus(pet, 'failed');
-    bubble(pet.id, '出错了：' + (event.error || ('exit ' + event.exitCode)), 6000);
+    bubble(pet.id, '出错了：' + (event.error || ('exit ' + event.exitCode)), 6000, 'error');
   } else if (event.type === 'queued') {
     setStatus(pet, 'queued');
   }
@@ -581,6 +748,34 @@ function activeTask() {
     .sort((a, b) => (b.updatedAt || b.startedAt || 0) - (a.updatedAt || a.startedAt || 0))[0] || null;
 }
 
+function activeMission() {
+  return [...missions]
+    .filter(mission => ['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status))
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))[0] || null;
+}
+
+function pinnedLiveSelection() {
+  const key = S.ui && S.ui.pinnedLiveTaskKey;
+  if (!key) return null;
+  if (key.startsWith('mission:')) {
+    const mission = missions.find(item => item.id === key.slice(8));
+    return mission ? { type: 'mission', value: mission, key } : null;
+  }
+  if (key.startsWith('task:')) {
+    const task = tasks.find(item => item.id === key.slice(5));
+    return task ? { type: 'task', value: task, key } : null;
+  }
+  return null;
+}
+
+async function setPinnedLiveTask(key) {
+  const next = (S.ui && S.ui.pinnedLiveTaskKey) === key ? null : key;
+  S.ui.pinnedLiveTaskKey = next;
+  await window.petOffice.setUi({ pinnedLiveTaskKey: next });
+  updateLiveTaskCard(true);
+  if (activitySurface.state !== 'closed') refreshActivityContents();
+}
+
 function updateLiveTaskCard(showCompletion = false) {
   const card = $('#live-task');
   if (!card) return;
@@ -589,7 +784,28 @@ function updateLiveTaskCard(showCompletion = false) {
     return;
   }
   clearTimeout(liveTaskHideTimer);
-  let task = activeTask();
+  const pinned = pinnedLiveSelection();
+  const mission = pinned && pinned.type === 'mission' ? pinned.value : (!pinned ? activeMission() : null);
+  if (mission) {
+    const activeNodes = (mission.tasks || []).filter(task => ['ready', 'queued', 'running', 'succeeded', 'reviewing', 'retrying'].includes(task.status));
+    const current = activeNodes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+    const status = mission.status === 'completed' ? 'done'
+      : (mission.status === 'failed' ? 'failed'
+        : (mission.status === 'cancelled' ? 'cancelled'
+          : (['needs_input', 'interrupted', 'awaiting_confirmation', 'partially_succeeded'].includes(mission.status) ? 'needs_input' : 'working')));
+    const detail = current ? ((current.assigneeName || current.assigneePetId) + ' · ' + missionTaskStatusLabel(current.status) + (current.progress ? ' · ' + short(current.progress, 70) : '')) : (MISSION_STATUS_TEXT[mission.status] || mission.status);
+    const key = 'mission:' + mission.id;
+    const pinnedMark = S.ui.pinnedLiveTaskKey === key;
+    card.innerHTML = '<span class="live-task-dot ' + status + '"></span><span class="live-task-copy"><span class="live-task-meta"><strong>主管 Mission</strong><span class="live-task-source">' + esc(mission.projectName || '项目') + '</span><i>' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + '</i>' + (activeNodes.length > 1 ? '<em>另有 ' + (activeNodes.length - 1) + ' 个节点</em>' : '') + '</span><b>' + esc(short(mission.objective, 72)) + '</b><small><i>阶段 ' + ((mission.currentWave || 0) + 1) + '</i>' + esc(detail) + '</small></span><span class="live-task-actions"><span class="live-pin' + (pinnedMark ? ' active' : '') + '" data-live-pin="' + esc(key) + '" title="' + (pinnedMark ? '取消固定' : '固定任务卡') + '">⌖</span><span class="live-task-open">›</span></span>';
+    card.dataset.threadId = mission.supervisorThreadId || '';
+    card.dataset.liveKey = key;
+    card.classList.remove('hidden');
+    const boss = pets.get('supervisor');
+    if (boss) boss.el.classList.add('has-live-task');
+    positionLiveTaskCard();
+    return;
+  }
+  let task = pinned && pinned.type === 'task' ? pinned.value : (!pinned ? activeTask() : null);
   if (!task && showCompletion) {
     task = [...tasks].filter(item => ['done', 'failed', 'cancelled'].includes(item.status)).slice(-1)[0] || null;
   }
@@ -604,15 +820,18 @@ function updateLiveTaskCard(showCompletion = false) {
   const statusLabel = STATUS_TEXT[status] || '工作中';
   const title = short(task.brief || '正在处理任务', 72);
   const detail = short(task.progress || (status === 'working' ? '正在分析并处理…' : STATUS_TEXT[status]), 100);
-  const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'delegation' ? '分工 Agent' : '桌宠会话');
+  const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'mission' ? 'Mission Agent' : (task.source === 'delegation' ? '分工 Agent' : '桌宠会话'));
   const model = modelName(task.model);
-  card.innerHTML = '<span class="live-task-dot ' + status + '"></span><span class="live-task-copy"><span class="live-task-meta"><strong>' + esc(agentName) + '</strong><span class="live-task-source">' + esc(source) + '</span><span class="live-task-model">' + esc(model) + '</span><i>' + esc(statusLabel) + '</i>' + (running.length > 1 ? '<em>另有 ' + (running.length - 1) + ' 项</em>' : '') + '</span><b>' + esc(title) + '</b><small><i>' + esc(progressStageLabel(task.progressStage)) + '</i>' + esc(detail) + '</small></span><span class="live-task-open">›</span>';
+  const key = 'task:' + task.id;
+  const pinnedMark = S.ui.pinnedLiveTaskKey === key;
+  card.innerHTML = '<span class="live-task-dot ' + status + '"></span><span class="live-task-copy"><span class="live-task-meta"><strong>' + esc(agentName) + '</strong><span class="live-task-source">' + esc(source) + '</span><span class="live-task-model">' + esc(model) + '</span><i>' + esc(statusLabel) + '</i>' + (running.length > 1 ? '<em>另有 ' + (running.length - 1) + ' 项</em>' : '') + '</span><b>' + esc(title) + '</b><small><i>' + esc(progressStageLabel(task.progressStage)) + '</i>' + esc(detail) + '</small></span><span class="live-task-actions"><span class="live-pin' + (pinnedMark ? ' active' : '') + '" data-live-pin="' + esc(key) + '" title="' + (pinnedMark ? '取消固定' : '固定任务卡') + '">⌖</span><span class="live-task-open">›</span></span>';
   card.dataset.threadId = task.threadId || '';
+  card.dataset.liveKey = key;
   card.classList.remove('hidden');
   const boss = pets.get('supervisor');
   if (boss) boss.el.classList.add('has-live-task');
   positionLiveTaskCard();
-  if (!activeTask()) liveTaskHideTimer = setTimeout(hideLiveTaskCard, 6500);
+  if (!activeTask() && !pinnedMark) liveTaskHideTimer = setTimeout(hideLiveTaskCard, 6500);
 }
 
 function hideLiveTaskCard() {
@@ -620,6 +839,7 @@ function hideLiveTaskCard() {
   if (card) {
     card.classList.add('hidden');
     card.removeAttribute('data-thread-id');
+    card.removeAttribute('data-live-key');
   }
   const boss = pets.get('supervisor');
   if (boss) boss.el.classList.remove('has-live-task');
@@ -808,12 +1028,21 @@ function updateSkinState(pet) {
   startSpriteAnimation(pet);
 }
 
-function bubble(petId, text, timeout = 5000) {
+function bubbleAllowed(kind) {
+  const mode = (S.settings || {}).notificationMode || 'standard';
+  if (mode === 'quiet') return ['attention', 'error'].includes(kind);
+  if (mode === 'standard') return kind !== 'detail';
+  return true;
+}
+
+function bubble(petId, text, timeout = 5000, kind = 'standard') {
+  if (!bubbleAllowed(kind)) return;
   const pet = pets.get(petId);
   if (!pet) return;
   const element = pet.el.querySelector('.bubble');
   element.textContent = text;
   element.classList.remove('hidden');
+  announce(pet.name + '：' + text);
   clearTimeout(bubbleTimers[petId]);
   bubbleTimers[petId] = setTimeout(() => element.classList.add('hidden'), timeout);
 }
@@ -916,6 +1145,7 @@ function closeOverlays() {
   $('#ctxmenu').classList.add('hidden');
   closeComposer();
   openPanelFor = null;
+  updateLiveTaskCard();
   if ($('#composer').classList.contains('hidden')) syncMouseCapture(document.elementFromPoint(lastPointer.x, lastPointer.y));
 }
 
@@ -951,6 +1181,7 @@ function finishComposerClose() {
   composer.removeAttribute('style');
   petMapValues().forEach(pet => pet.el.classList.remove('composer-open'));
   composerAttachments = [];
+  updateLiveTaskCard();
   syncMouseCapture(document.elementFromPoint(lastPointer.x, lastPointer.y));
 }
 
@@ -960,7 +1191,10 @@ function petMapValues() {
 
 function modelOptions(selected) {
   return '<option value=""' + (!selected ? ' selected' : '') + '>Codex 默认</option>' +
-    (S.models || []).map(model => '<option value="' + esc(model.slug) + '"' + (model.slug === selected ? ' selected' : '') + '>' + esc(model.name) + '</option>').join('');
+    (S.models || []).map(model => {
+      const tags = capabilityLabels(model.slug).slice(0, 3);
+      return '<option value="' + esc(model.slug) + '"' + (model.slug === selected ? ' selected' : '') + '>' + esc(model.name + (tags.length ? ' · ' + tags.join('/') : '')) + '</option>';
+    }).join('');
 }
 
 function resetText(report) {
@@ -976,6 +1210,10 @@ function quotaBlock(slug) {
   const label = providerLabel(provider);
   const quota = S.quotas || {};
   const report = (quota.reports || []).find(item => item.provider === provider);
+  const stale = !!quota.stale;
+  const staleNote = stale
+    ? '<div class="quota-stale">缓存数据 · ' + esc(quota.error || '刷新失败') + '</div>'
+    : '';
   if (!quota.ok && !report) {
     return '<section class="quota-card warning"><div class="quota-title">' + esc(label) + ' 额度</div><div>暂时无法读取额度，请确认 OpenCodex 代理正在运行。</div></section>';
   }
@@ -990,11 +1228,11 @@ function quotaBlock(slug) {
       '<div class="quota-title"><span>' + esc(label) + '</span><button class="icon-btn" id="quota-refresh" title="刷新额度">↻</button></div>' +
       '<div class="quota-scope">' + esc(scope) + '</div>' +
       quotaLine('5 小时', fiveHour) + (weekly == null ? '' : quotaLine('本周', weekly)) +
-      '<div class="quota-time">' + esc(resetText(report)) + '</div></section>';
+      '<div class="quota-time">' + esc(resetText(report)) + '</div>' + staleNote + '</section>';
   }
   if (report.kind === 'balance') {
     return '<section class="quota-card"><div class="quota-title"><span>' + esc(label) + '</span><button class="icon-btn" id="quota-refresh" title="刷新额度">↻</button></div>' +
-      '<div class="quota-scope">' + esc(scope) + '</div><div class="balance-text">' + esc(report.balanceText) + '</div></section>';
+      '<div class="quota-scope">' + esc(scope) + '</div><div class="balance-text">' + esc(report.balanceText) + '</div>' + staleNote + '</section>';
   }
   return '<section class="quota-card"><div class="quota-title">' + esc(label) + ' 额度</div><div class="quota-empty">供应商返回了额度信息，但格式暂不支持</div></section>';
 }
@@ -1016,12 +1254,52 @@ function recentTasksFor(petId, limit = 6) {
 }
 
 function currentProject() {
-  return (S.projects || []).find(project => project.id === S.activeProjectId) || null;
+  return (S.projects || []).find(project => project.id === S.activeProjectId && !project.archived) || null;
 }
 
 function projectOptions() {
-  if (!(S.projects || []).length) return '<option value="">尚无项目</option>';
-  return S.projects.map(project => '<option value="' + esc(project.id) + '"' + (project.id === S.activeProjectId ? ' selected' : '') + '>' + esc(project.name) + '</option>').join('');
+  const active = (S.projects || []).filter(project => !project.archived);
+  if (!active.length) return '<option value="">尚无可用项目</option>';
+  return active.map(project => '<option value="' + esc(project.id) + '"' + (project.id === S.activeProjectId ? ' selected' : '') + '>' + esc(project.name) + '</option>').join('');
+}
+
+function projectManagementHtml(project) {
+  const archived = (S.projects || []).filter(item => item.archived);
+  const archivedHtml = archived.length ? '<details class="archived-projects" open><summary>已归档项目 · ' + archived.length + '</summary>' + archived.map(item => '<div><span><b>' + esc(item.name) + '</b><small>' + esc(item.path) + '</small></span><button class="btn compact" data-restore-project="' + esc(item.id) + '">恢复</button></div>').join('') + '</details>' : '';
+  if (!project) return '<div class="empty-state project-empty">新建、添加或恢复项目后，可在这里管理会话与附件。</div>' + archivedHtml;
+  const sessions = projectSessionCache.get(project.id) || [];
+  const sessionRows = sessions.length ? sessions.slice(0, 12).map(session =>
+    '<div class="session-row"><span class="status-dot ' + statusForTask(session.status) + '"></span><div><b>' + esc(short(session.title, 58)) + '</b><small>' + esc(session.petName) + ' · ' + esc(modelName(session.model)) + (session.current ? ' · 当前上下文' : '') + '</small></div><button class="text-btn" data-project-thread="' + esc(session.threadId) + '">打开</button></div>'
+  ).join('') : '<div class="empty-state">暂无项目会话；发送第一条消息后会出现在这里。</div>';
+  return '<section class="project-manager"><div class="section-title">项目管理</div>' +
+    '<div class="project-summary"><div><b>' + esc(project.name) + '</b><small>' + esc(project.path) + '</small></div><span>' + (project.threadIds || []).length + ' 个会话</span></div>' +
+    '<div class="button-row"><button class="btn" id="p-rename-project">重命名</button><button class="btn" id="p-archive-project">归档</button><button class="btn" id="p-clear-attachments">清理附件</button><button class="btn danger" id="p-remove-project">移除列表</button></div>' +
+    '<div class="section-title">会话</div><div class="session-list">' + sessionRows + '</div>' +
+    '<div class="session-actions"><button class="btn" id="p-new-session">新建空白会话</button><button class="btn danger" id="p-reset-context">重置主管上下文</button></div>' +
+    archivedHtml + '</section>';
+}
+
+function taskProjectId(task) {
+  if (task.projectId) return task.projectId;
+  const cwd = String(task.cwd || '').replace(/\\/g, '/').toLowerCase();
+  if (!cwd) return null;
+  const project = (S.projects || []).find(item => {
+    const root = String(item.path || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+    return cwd === root || cwd.startsWith(root + '/');
+  });
+  return project ? project.id : null;
+}
+
+function matchesProjectFilter(item) {
+  const filter = (S.ui && S.ui.taskProjectFilter) || 'all';
+  if (filter === 'all') return true;
+  return (item.projectId || taskProjectId(item)) === filter;
+}
+
+function projectFilterOptions() {
+  const filter = (S.ui && S.ui.taskProjectFilter) || 'all';
+  return '<option value="all"' + (filter === 'all' ? ' selected' : '') + '>全部项目</option>' +
+    (S.projects || []).map(project => '<option value="' + esc(project.id) + '"' + (project.id === filter ? ' selected' : '') + '>' + esc(project.name) + (project.archived ? '（已归档）' : '') + '</option>').join('');
 }
 
 function activityPriority(status) {
@@ -1034,7 +1312,8 @@ function updateActivityBadge() {
   const badge = button.querySelector('.activity-badge');
   const interactionThreads = new Set(interactions.map(item => item.threadId).filter(Boolean));
   const extraWaiting = tasks.filter(task => task.status === 'waiting_input' && (!task.threadId || !interactionThreads.has(task.threadId))).length;
-  const count = interactions.length + extraWaiting;
+  const missionAttention = missions.filter(mission => ['awaiting_confirmation', 'needs_input', 'interrupted'].includes(mission.status)).length;
+  const count = interactions.length + extraWaiting + missionAttention;
   badge.textContent = count > 9 ? '9+' : String(count);
   badge.classList.toggle('hidden', count === 0);
   button.classList.toggle('attention', count > 0);
@@ -1062,9 +1341,49 @@ function interactionCardHtml(item) {
 function activityTaskHtml(task) {
   const status = statusForTask(task.status);
   const label = STATUS_TEXT[status] || task.status || '待命';
-  const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'delegation' ? '分工' : '桌宠会话');
+  const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'mission' ? 'Mission' : (task.source === 'delegation' ? '分工' : '桌宠会话'));
   return '<article class="activity-task" data-task-status="' + esc(task.status) + '"><span class="status-dot ' + status + '"></span><div class="activity-task-copy"><div><b>' + esc(task.petName || (pets.get(task.petId) && pets.get(task.petId).name) || task.petId || 'Agent') + '</b><small class="task-source">' + esc(source) + '</small><small>' + esc(modelName(task.model)) + '</small></div><p>' + esc(short(task.brief, 110)) + '</p>' + (task.progress ? '<p class="activity-progress"><span>' + esc(progressStageLabel(task.progressStage)) + '</span>' + esc(short(task.progress, 150)) + '</p>' : '') + '</div>' +
-    '<div class="activity-task-side"><span>' + esc(label) + '</span>' + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</div></article>';
+    '<div class="activity-task-side"><span>' + esc(label) + '</span><button class="text-btn pin-task' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? ' active' : '') + '" data-pin-task="task:' + esc(task.id) + '">' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? '已固定' : '固定') + '</button>' + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</div></article>';
+}
+
+function missionStatusClass(status) {
+  if (status === 'completed') return 'done';
+  if (status === 'partially_succeeded') return 'partial';
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  if (['needs_input', 'interrupted', 'awaiting_confirmation'].includes(status)) return 'attention';
+  return 'working';
+}
+
+function missionTaskStatusLabel(status) {
+  return ({ blocked: '等待依赖', ready: '可执行', queued: '排队', running: '工作中', succeeded: '等待检查', reviewing: '检查中', retrying: '准备重试', accepted: '已接受', failed: '失败', skipped: '跳过', cancelled: '取消', interrupted: '中断' })[status] || status;
+}
+
+function missionCardHtml(mission) {
+  const waves = new Map();
+  for (const task of mission.tasks || []) {
+    const wave = Number(task.wave) || 0;
+    if (!waves.has(wave)) waves.set(wave, []);
+    waves.get(wave).push(task);
+  }
+  const taskRows = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, items]) =>
+    '<div class="mission-wave"><div class="mission-wave-title">阶段 ' + (wave + 1) + '<span>' + items.length + '</span></div>' + items.map(task =>
+      '<div class="mission-node"><span class="mission-node-state ' + esc(task.status) + '"></span><div><b>' + esc(task.title) + '</b><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.review && task.review.reason ? '<p>' + esc(short(task.review.reason, 130)) + '</p>' : '') + '</div><aside><span>' + esc(missionTaskStatusLabel(task.status)) + '</span>' + (task.attempts ? '<i>第 ' + task.attempts + ' 次</i>' : '') + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</aside></div>'
+    ).join('') + '</div>'
+  ).join('');
+  let actions = '';
+  if (mission.status === 'awaiting_confirmation') actions = '<button class="btn" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button><button class="btn primary" data-mission-confirm="' + esc(mission.id) + '">确认执行</button>';
+  else if (mission.status === 'interrupted') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">检查并恢复</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'high_risk') actions = '<button class="btn danger" data-mission-apply="' + esc(mission.id) + '">确认高风险回写</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">我已手动处理</button>';
+  if (['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
+  const key = 'mission:' + mission.id;
+  return '<details class="mission-card" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">打开主管任务</button>' : '') + actions + '</div></div></details>';
+}
+
+function missionSectionHtml(items = missions) {
+  if (!items.length) return '';
+  return '<section class="mission-list"><div class="section-title">Mission<span>' + items.length + '</span></div>' + items.slice(0, 12).map(missionCardHtml).join('') + '</section>';
 }
 
 function progressStageLabel(stage) {
@@ -1080,18 +1399,21 @@ function refreshActivityContents() {
   const panel = $('#activity');
   const scroll = panel.querySelector('.activity-scroll');
   const previousScroll = scroll ? scroll.scrollTop : 0;
-  const ordered = [...tasks].sort((a, b) => activityPriority(a.status) - activityPriority(b.status) || (b.updatedAt || b.finishedAt || b.startedAt || 0) - (a.updatedAt || a.finishedAt || a.startedAt || 0));
+  const filteredTasks = tasks.filter(matchesProjectFilter);
+  const filteredMissions = missions.filter(matchesProjectFilter);
+  const ordered = [...filteredTasks].sort((a, b) => activityPriority(a.status) - activityPriority(b.status) || (b.updatedAt || b.finishedAt || b.startedAt || 0) - (a.updatedAt || a.finishedAt || a.startedAt || 0));
   const waiting = ordered.filter(task => task.status === 'waiting_input').slice(0, 8);
   const active = ordered.filter(task => ['running', 'queued'].includes(task.status)).slice(0, 12);
   const recent = ordered.filter(task => !['waiting_input', 'running', 'queued'].includes(task.status)).slice(0, 8);
   const activeCount = waiting.length + active.length;
   const monitor = S.desktopMonitor || { ok: true };
   const monitorBanner = monitor.ok ? '' : '<div class="monitor-warning"><b>Codex Desktop 状态暂时不可用</b><span>' + esc(monitor.error || '已继续尝试重连') + '</span></div>';
-  const empty = !interactions.length && !waiting.length && !active.length && !recent.length
+  const empty = !filteredMissions.length && !interactions.length && !waiting.length && !active.length && !recent.length
     ? '<section class="activity-list"><div class="empty-state">' + (monitor.ok ? '当前没有进行中的任务' : '暂时无法确认 Codex Desktop 任务状态') + '</div></section>'
     : '';
-  panel.innerHTML = '<header class="activity-head"><div><b>任务动态</b><small>' + (activeCount ? activeCount + ' 项正在进行' : '所有 Agent 的最近活动') + '</small></div><button class="close-btn" id="activity-close" aria-label="收起">⌄</button></header>' +
+  panel.innerHTML = '<header class="activity-head"><div><b>任务动态</b><small>' + (activeCount ? activeCount + ' 项正在进行' : '所有 Agent 的最近活动') + '</small></div><label class="activity-filter"><span>项目</span><select id="activity-project-filter">' + projectFilterOptions() + '</select></label><button class="close-btn" id="activity-close" aria-label="收起">⌄</button></header>' +
     '<div class="activity-scroll">' + monitorBanner +
+    missionSectionHtml(filteredMissions) +
     (interactions.length ? '<section class="interaction-list"><div class="section-title">需要你处理<span>' + interactions.length + '</span></div>' + interactions.map(interactionCardHtml).join('') + '</section>' : '') +
     activitySectionHtml('等待处理', waiting) + activitySectionHtml('进行中', active) + activitySectionHtml('最近动态', recent) + empty + '</div>';
   bindActivity();
@@ -1146,6 +1468,8 @@ function openActivity() {
   closeComposer(true);
   openPanelFor = null;
   panel.className = 'ui pet-activity';
+  panel.setAttribute?.('role', 'dialog');
+  panel.setAttribute?.('aria-label', '任务动态');
   panel.classList.remove('hidden', 'ready');
   const boss = pets.get('supervisor');
   if (boss) boss.el.classList.add('activity-open');
@@ -1223,8 +1547,27 @@ function bindActivity() {
     closeActivity();
   };
   panel.querySelectorAll('[data-activity-thread]').forEach(button => {
-    button.onclick = () => window.petOffice.openCodex(button.dataset.activityThread);
+    button.onclick = () => openCodexThread(button.dataset.activityThread);
   });
+  const projectFilter = panel.querySelector('#activity-project-filter');
+  if (projectFilter) projectFilter.onchange = async () => {
+    S.ui.taskProjectFilter = projectFilter.value;
+    await window.petOffice.setUi({ taskProjectFilter: projectFilter.value });
+    refreshActivityContents();
+  };
+  panel.querySelectorAll('[data-pin-task]').forEach(button => {
+    button.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      setPinnedLiveTask(button.dataset.pinTask);
+    };
+  });
+  panel.querySelectorAll('[data-mission-confirm]').forEach(button => { button.onclick = async () => { await window.petOffice.confirmMission(button.dataset.missionConfirm); }; });
+  panel.querySelectorAll('[data-mission-regenerate]').forEach(button => { button.onclick = async () => { button.disabled = true; await window.petOffice.regenerateMission(button.dataset.missionRegenerate); }; });
+  panel.querySelectorAll('[data-mission-resume]').forEach(button => { button.onclick = async () => { await window.petOffice.resumeMission(button.dataset.missionResume); }; });
+  panel.querySelectorAll('[data-mission-cancel]').forEach(button => { button.onclick = async () => { await window.petOffice.cancelMission(button.dataset.missionCancel); }; });
+  panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionApply, 'apply'); }; });
+  panel.querySelectorAll('[data-mission-resolved]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionResolved, 'mark-resolved'); }; });
   const respond = async (button, payload) => {
     const card = button.closest('[data-interaction-card]');
     card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
@@ -1254,6 +1597,7 @@ function openPanel(petId, requestedTab) {
   const pet = pets.get(petId);
   if (!pet) return;
   openPanelFor = petId;
+  hideLiveTaskCard();
   closeActivity(true);
   $('#ctxmenu').classList.add('hidden');
   const panel = $('#panel');
@@ -1268,10 +1612,45 @@ function openPanel(petId, requestedTab) {
   html += '<nav class="panel-tabs">' + tabs.map(item => '<button data-panel-tab="' + item[0] + '" class="' + (tab === item[0] ? 'active' : '') + '">' + item[1] + '</button>').join('') + '</nav>';
   html += '<div class="panel-page">' + panelPage(pet, tab) + '</div>';
   panel.innerHTML = html;
+  panel.setAttribute?.('role', 'dialog');
+  panel.setAttribute?.('aria-label', pet.name + ' 设置');
   panel.classList.remove('hidden');
   positionPanel(panel, pet.el);
   bindPanel(petId);
   syncMouseCapture(panel);
+  if (tab === 'work' && pet.role === 'supervisor') {
+    const project = currentProject();
+    if (project && !projectSessionCache.has(project.id) && !projectSessionLoading.has(project.id)) {
+      projectSessionLoading.add(project.id);
+      window.petOffice.listSessions(project.id).then(items => {
+        projectSessionCache.set(project.id, Array.isArray(items) ? items : []);
+      }).catch(() => {
+        projectSessionCache.set(project.id, []);
+      }).finally(() => {
+        projectSessionLoading.delete(project.id);
+        if (openPanelFor === petId && panelTabs.get(petId) === 'work' && currentProject() && currentProject().id === project.id) openPanel(petId, 'work');
+      });
+    }
+  }
+  if (tab === 'settings' && pet.role === 'supervisor' && !diagnosticsReport && !diagnosticsInFlight) {
+    diagnosticsInFlight = true;
+    window.petOffice.diagnostics().then(report => {
+      diagnosticsReport = report;
+    }).catch(() => {}).finally(() => {
+      diagnosticsInFlight = false;
+      if (openPanelFor === petId && panelTabs.get(petId) === 'settings') openPanel(petId, 'settings');
+    });
+  }
+}
+
+function diagnosticsHtml() {
+  if (!diagnosticsReport) {
+    return '<div class="diagnostics-card"><div class="diagnostics-head"><b>连接诊断</b><button class="btn compact" id="p-diagnostics">检测</button></div><div class="diagnostics-loading">正在检查 Codex 与 OpenCodex…</div></div>';
+  }
+  const items = diagnosticsReport.items || [];
+  return '<div class="diagnostics-card"><div class="diagnostics-head"><b>连接诊断</b><button class="btn compact" id="p-diagnostics">重新检测</button></div>' +
+    '<div class="diagnostics-list">' + items.map(item => '<div class="diagnostic-row ' + esc(item.status) + '"><i></i><span><b>' + esc(item.label) + '</b><small>' + esc(item.detail) + '</small></span></div>').join('') + '</div>' +
+    '<small class="diagnostics-time">检测于 ' + esc(new Date(diagnosticsReport.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) + '</small></div>';
 }
 
 function panelPage(pet, tab) {
@@ -1280,8 +1659,9 @@ function panelPage(pet, tab) {
   if (tab === 'overview') {
     return '<div class="hero-status"><span class="status-dot ' + pet.status + '"></span><div><b>' + esc(STATUS_TEXT[pet.status] || '待命') + '</b><small>' + (current ? esc(short(current.brief, 72)) : '等待你的下一条消息') + '</small></div></div>' +
       '<label class="field"><span>当前模型</span><select id="p-model">' + modelOptions(pet.model) + '</select></label>' +
+      capabilityBadges(pet.model) +
       quotaBlock(pet.model) +
-      '<div class="button-row"><button class="btn primary" id="p-newtask">✎ 发送消息</button><button class="btn" id="p-activity">任务动态</button><button class="btn" id="p-opencodex">在 Codex 中打开</button></div>';
+      '<div class="button-row"><button class="btn primary" id="p-newtask">✎ 继续对话</button><button class="btn" id="p-fresh-chat">新会话</button><button class="btn" id="p-reset-chat">重置上下文</button><button class="btn" id="p-activity">任务动态</button><button class="btn" id="p-opencodex">在 Codex 中打开</button></div>';
   }
   if (tab === 'work') {
     let content = '';
@@ -1289,7 +1669,7 @@ function panelPage(pet, tab) {
       const project = currentProject();
       content += '<label class="field"><span>当前项目</span><select id="p-project">' + projectOptions() + '</select></label>' +
         '<div class="project-path">' + esc(project ? project.path : '请新建或添加一个项目工作区') + '</div>' +
-        '<div class="button-row"><button class="btn" id="p-newproj">新建项目</button><button class="btn" id="p-addproj">添加文件夹</button><button class="btn" id="p-openproj">打开目录</button></div>';
+        '<div class="button-row"><button class="btn" id="p-newproj">新建项目</button><button class="btn" id="p-addproj">添加文件夹</button><button class="btn" id="p-openproj">打开目录</button></div>' + projectManagementHtml(project);
     } else {
       content += '<label class="field"><span>用量上限（tokens）</span><input id="p-cap" type="number" min="0" step="10000" value="' + ((S.caps || {})[pet.id] || '') + '" placeholder="留空表示不限"></label>' +
         '<div class="metric-row"><span>累计记录</span><b>' + myTasks.reduce((total, task) => total + (task.tokens || 0), 0) + ' tokens</b></div>';
@@ -1314,8 +1694,16 @@ function panelPage(pet, tab) {
       '<label><span>迷你模式<small>缩小桌宠并隐藏常驻名称，悬停时恢复</small></span>' + switchHtml('s-compact', S.settings.compactMode) + '</label>' +
       '<label><span>减少动画<small>停用循环逐帧和位移动画，适合游戏或录屏</small></span>' + switchHtml('s-reduced-motion', S.settings.reducedMotion) + '</label>' +
       '<label class="field"><span>桌宠大小<small>迷你模式会在此基础上进一步缩小</small></span><select id="s-pet-scale">' + scaleOptions(S.settings.petScale) + '</select></label>' +
+      '<label class="field"><span>显示器<small>切换后桌宠会安全移动到目标工作区</small></span><select id="s-display">' + displayOptions(S.settings.displayMode) + '</select></label>' +
+      '<label class="field"><span>全屏应用避让<small>检测到游戏、演示或视频全屏时的行为</small></span><select id="s-fullscreen">' + selectOptions([['corner', '只保留主管并避让到角落'], ['hide', '暂时完全隐藏'], ['ignore', '保持原样']], S.settings.fullscreenBehavior) + '</select></label>' +
+      '<label class="field"><span>通知详细程度<small>安静模式仅显示需要处理和错误</small></span><select id="s-notification">' + selectOptions([['quiet', '安静'], ['standard', '标准'], ['detailed', '详细']], S.settings.notificationMode) + '</select></label>' +
+      '<label class="field"><span>界面字号</span><select id="s-font-scale">' + selectOptions([[.9, '紧凑 90%'], [1, '标准 100%'], [1.1, '较大 110%'], [1.2, '大号 120%']], Number(S.settings.fontScale) || 1) + '</select></label>' +
+      '<label class="field"><span>界面字体</span><select id="s-font-family">' + selectOptions([['system', '系统默认'], ['rounded', '圆润'], ['readable', '高可读']], S.settings.fontFamily) + '</select></label>' +
+      '<label><span>自动检查更新<small>仅查询 GitHub Release；下载与安装始终由你确认</small></span>' + switchHtml('s-auto-update', S.settings.autoCheckUpdates !== false) + '</label>' +
       '<label class="field"><span>显示 / 隐藏快捷键<small>' + esc(shortcutHint()) + '</small></span><select id="s-shortcut">' + shortcutOptions(S.settings.toggleShortcut) + '</select></label>' +
       '<label class="field"><span>最大并行 Agent</span><input id="s-mp" type="number" min="1" max="5" value="' + S.settings.maxParallel + '"></label></div>' +
+      diagnosticsHtml() +
+      releaseHtml() +
       '<div class="danger-zone"><b>应用控制</b><div class="button-row"><button class="btn" id="p-hide-app">隐藏到托盘</button><button class="btn danger" id="p-quit">退出 Pet Office</button></div></div>' :
       '<button class="btn wide" id="p-hide-worker">隐藏该桌宠（任务继续）</button>');
 }
@@ -1456,6 +1844,7 @@ function bindPanel(petId) {
   panel.querySelector('#p-close').onclick = () => {
     panel.classList.add('hidden');
     openPanelFor = null;
+    updateLiveTaskCard();
     syncMouseCapture(document.elementFromPoint(lastPointer.x, lastPointer.y));
   };
   panel.querySelectorAll('[data-panel-tab]').forEach(button => {
@@ -1485,7 +1874,7 @@ function bindPanel(petId) {
   panel.querySelectorAll('[data-thread-task]').forEach(button => {
     button.onclick = () => {
       const task = tasks.find(item => item.id === button.dataset.threadTask);
-      if (task && task.threadId) window.petOffice.openCodex(task.threadId);
+      if (task && task.threadId) openCodexThread(task.threadId);
     };
   });
   panel.querySelectorAll('[data-result-task]').forEach(button => {
@@ -1497,6 +1886,10 @@ function bindPanel(petId) {
 
   const newTask = panel.querySelector('#p-newtask');
   if (newTask) newTask.onclick = () => openComposer(petId, delegationOn);
+  const freshChat = panel.querySelector('#p-fresh-chat');
+  if (freshChat) freshChat.onclick = () => startNewConversation(petId, false);
+  const resetChat = panel.querySelector('#p-reset-chat');
+  if (resetChat) resetChat.onclick = () => resetConversationContext(petId);
   const openCodex = panel.querySelector('#p-opencodex');
   if (openCodex) openCodex.onclick = () => openLatestThread(petId);
   const activity = panel.querySelector('#p-activity');
@@ -1557,10 +1950,42 @@ function bindPanel(petId) {
   if (reducedMotion) reducedMotion.onchange = () => saveSettings({ reducedMotion: reducedMotion.checked }, petId);
   const petScale = panel.querySelector('#s-pet-scale');
   if (petScale) petScale.onchange = () => saveSettings({ petScale: Number(petScale.value) || 1 }, petId);
+  const display = panel.querySelector('#s-display');
+  if (display) display.onchange = () => saveSettings({ displayMode: display.value }, petId);
+  const fullscreen = panel.querySelector('#s-fullscreen');
+  if (fullscreen) fullscreen.onchange = () => saveSettings({ fullscreenBehavior: fullscreen.value }, petId);
+  const notification = panel.querySelector('#s-notification');
+  if (notification) notification.onchange = () => saveSettings({ notificationMode: notification.value }, petId);
+  const fontScale = panel.querySelector('#s-font-scale');
+  if (fontScale) fontScale.onchange = () => saveSettings({ fontScale: Number(fontScale.value) || 1 }, petId);
+  const fontFamily = panel.querySelector('#s-font-family');
+  if (fontFamily) fontFamily.onchange = () => saveSettings({ fontFamily: fontFamily.value }, petId);
+  const autoUpdate = panel.querySelector('#s-auto-update');
+  if (autoUpdate) autoUpdate.onchange = () => saveSettings({ autoCheckUpdates: autoUpdate.checked }, petId);
   const shortcut = panel.querySelector('#s-shortcut');
   if (shortcut) shortcut.onchange = () => saveSettings({ toggleShortcut: shortcut.value }, petId);
   const maxParallel = panel.querySelector('#s-mp');
   if (maxParallel) maxParallel.onchange = () => saveSettings({ maxParallel: Math.max(1, Math.min(5, Number(maxParallel.value) || 5)) }, petId);
+  const runDiagnostics = panel.querySelector('#p-diagnostics');
+  if (runDiagnostics) runDiagnostics.onclick = async () => {
+    runDiagnostics.disabled = true;
+    runDiagnostics.textContent = '检测中…';
+    diagnosticsInFlight = true;
+    try { diagnosticsReport = await window.petOffice.diagnostics(); } catch { diagnosticsReport = null; }
+    diagnosticsInFlight = false;
+    if (openPanelFor === petId) openPanel(petId, 'settings');
+  };
+  const checkUpdate = panel.querySelector('#p-check-update');
+  if (checkUpdate) checkUpdate.onclick = async () => {
+    checkUpdate.disabled = true;
+    checkUpdate.textContent = '检查中…';
+    S.release = await window.petOffice.checkUpdates();
+    if (openPanelFor === petId) openPanel(petId, 'settings');
+  };
+  const openRelease = panel.querySelector('#p-open-release');
+  if (openRelease) openRelease.onclick = () => window.petOffice.openRelease();
+  const openCrashes = panel.querySelector('#p-open-crashes');
+  if (openCrashes) openCrashes.onclick = () => window.petOffice.openCrashes();
   const hideApp = panel.querySelector('#p-hide-app');
   if (hideApp) hideApp.onclick = () => window.petOffice.hideApp();
   const quit = panel.querySelector('#p-quit');
@@ -1582,7 +2007,9 @@ async function saveSettings(patch, petId) {
 function bindProjectControls(root, petId) {
   const select = root.querySelector('#p-project');
   if (select) select.onchange = async event => {
-    await window.petOffice.selectProject(event.target.value);
+    if (!event.target.value) return;
+    const selected = await window.petOffice.selectProject(event.target.value);
+    if (!selected) return;
     S.activeProjectId = event.target.value;
     openPanel(petId, 'work');
   };
@@ -1611,12 +2038,80 @@ function bindProjectControls(root, petId) {
     const project = currentProject();
     if (project) window.petOffice.openPath(project.path);
   };
+  root.querySelectorAll('[data-project-thread]').forEach(button => { button.onclick = () => openCodexThread(button.dataset.projectThread); });
+  const renameProject = root.querySelector('#p-rename-project');
+  if (renameProject) renameProject.onclick = async () => {
+    const project = currentProject();
+    const name = project && await promptText('重命名项目', project.name);
+    if (!project || !name) return;
+    const result = await window.petOffice.renameProject(project.id, name);
+    if (!result || !result.ok) return bubble('supervisor', (result && result.error) || '重命名失败', 6000);
+    await refreshState();
+  };
+  const archiveProject = root.querySelector('#p-archive-project');
+  if (archiveProject) archiveProject.onclick = async () => {
+    const project = currentProject();
+    if (!project || !await confirmAction('归档项目', '归档只会从日常列表隐藏“' + project.name + '”，不会删除文件或 Codex 会话。', '归档')) return;
+    const result = await window.petOffice.archiveProject(project.id, true);
+    if (!result || !result.ok) return bubble('supervisor', (result && result.error) || '归档失败', 6500);
+    projectSessionCache.delete(project.id);
+    await refreshState();
+    if (pets.get('supervisor')) openPanel('supervisor', 'work');
+  };
+  const clearAttachments = root.querySelector('#p-clear-attachments');
+  if (clearAttachments) clearAttachments.onclick = async () => {
+    const project = currentProject();
+    if (!project || !await confirmAction('清理项目附件', '仅删除“' + project.name + '”项目 inbox 目录内的附件副本。项目源码、会话和 Mission 不受影响。', '清理附件')) return;
+    const result = await window.petOffice.clearAttachments(project.id);
+    bubble('supervisor', result && result.ok ? '已清理 ' + result.count + ' 项附件' : ((result && result.error) || '清理失败'), 6500);
+  };
+  const removeProject = root.querySelector('#p-remove-project');
+  if (removeProject) removeProject.onclick = async () => {
+    const project = currentProject();
+    if (!project || !await confirmAction('从 Pet Office 移除', '只移除项目记录；磁盘目录“' + project.path + '”会完整保留。以后可重新添加。', '移除记录')) return;
+    const result = await window.petOffice.removeProject(project.id);
+    if (!result || !result.ok) return bubble('supervisor', (result && result.error) || '移除失败', 6500);
+    projectSessionCache.delete(project.id);
+    await refreshState();
+    if (pets.get('supervisor')) openPanel('supervisor', 'work');
+  };
+  root.querySelectorAll('[data-restore-project]').forEach(button => {
+    button.onclick = async () => {
+      const result = await window.petOffice.archiveProject(button.dataset.restoreProject, false);
+      if (!result || !result.ok) return bubble('supervisor', (result && result.error) || '恢复失败', 6000);
+      await refreshState();
+      openPanel('supervisor', 'work');
+    };
+  });
+  const newSession = root.querySelector('#p-new-session');
+  if (newSession) newSession.onclick = () => startNewConversation('supervisor', false);
+  const resetContext = root.querySelector('#p-reset-context');
+  if (resetContext) resetContext.onclick = () => resetConversationContext('supervisor');
+}
+
+async function openCodexThread(threadId) {
+  const result = await window.petOffice.openCodex(threadId || null);
+  if (!result || result.ok !== false) return result;
+  if (result.code !== 'ACTIVE_PET_CHAT') {
+    bubble('supervisor', result.error || '无法打开 Codex', 7000);
+    return result;
+  }
+  const confirmed = await confirmAction(
+    '移交到 Codex Desktop',
+    '当前回合仍在由桌宠执行。移交会先中断这一回合、释放线程写入权，然后在 Codex 中打开原会话。',
+    '停止并移交'
+  );
+  if (!confirmed) return result;
+  const handoff = await window.petOffice.handoffChat(result.taskId);
+  if (!handoff || !handoff.ok) bubble('supervisor', (handoff && handoff.error) || '移交失败', 7000);
+  else bubble('supervisor', '已移交到 Codex Desktop', 5000);
+  return handoff;
 }
 
 function openLatestThread(petId) {
   const candidates = tasks.filter(task => (!petId || task.petId === petId) && task.threadId);
   const latest = candidates[candidates.length - 1];
-  window.petOffice.openCodex(latest ? latest.threadId : null);
+  openCodexThread(latest ? latest.threadId : null);
 }
 
 async function setDelegationMode(value, notify) {
@@ -1624,6 +2119,35 @@ async function setDelegationMode(value, notify) {
   S.ui.delegationOn = delegationOn;
   await window.petOffice.setUi({ delegationOn });
   if (notify) bubble('supervisor', delegationOn ? '分工模式已开启' : '已切换为单 Agent 对话', 3200);
+}
+
+async function startNewConversation(petId, mode = false) {
+  const project = currentProject();
+  if (project) {
+    const result = await window.petOffice.newChat({ projectId: project.id, petId });
+    if (!result || !result.ok) {
+      bubble(petId || 'supervisor', (result && result.error) || '无法新建会话', 6000);
+      return;
+    }
+  }
+  openComposer(petId, mode);
+}
+
+async function resetConversationContext(petId) {
+  const project = currentProject();
+  if (!project) return bubble(petId || 'supervisor', '请先选择项目', 4500);
+  const pet = pets.get(petId) || pets.get('supervisor');
+  const confirmed = await confirmAction(
+    '重置上下文',
+    '将断开 ' + pet.name + ' 在“' + project.name + '”中的当前会话。历史会话与项目文件会保留，下一条消息从空白上下文开始。',
+    '重置上下文'
+  );
+  if (!confirmed) return;
+  const result = await window.petOffice.resetChat({ projectId: project.id, petId: pet.id });
+  if (!result || !result.ok) return bubble(pet.id, (result && result.error) || '无法重置上下文', 6500);
+  projectSessionCache.delete(project.id);
+  bubble(pet.id, '上下文已重置，历史会话仍可打开。', 5000);
+  openComposer(pet.id, false);
 }
 
 function promptText(title, placeholder) {
@@ -1654,6 +2178,35 @@ function promptText(title, placeholder) {
   });
 }
 
+function confirmAction(title, message, confirmLabel = '确认') {
+  return new Promise(resolve => {
+    closeActivity(true);
+    $('#panel').classList.add('hidden');
+    openPanelFor = null;
+    const composer = $('#composer');
+    clearTimeout(composerCloseTimer);
+    composer.getAnimations().forEach(animation => animation.cancel());
+    if (composerPetId && pets.get(composerPetId)) pets.get(composerPetId).el.classList.remove('composer-open');
+    composerPetId = null;
+    composerAttachments = [];
+    composer.className = 'ui dialog-composer';
+    composer.removeAttribute('style');
+    composer.innerHTML = '<header class="composer-head"><div><b>' + esc(title) + '</b></div><button class="close-btn" id="confirm-close">×</button></header>' +
+      '<div class="confirm-dialog-copy">' + esc(message) + '</div>' +
+      '<div class="composer-foot"><button class="btn" id="confirm-cancel">取消</button><button class="btn danger" id="confirm-ok">' + esc(confirmLabel) + '</button></div>';
+    composer.classList.remove('hidden');
+    syncMouseCapture(composer);
+    const done = value => {
+      composer.classList.add('hidden');
+      syncMouseCapture(document.elementFromPoint(lastPointer.x, lastPointer.y));
+      resolve(value);
+    };
+    composer.querySelector('#confirm-close').onclick = () => done(false);
+    composer.querySelector('#confirm-cancel').onclick = () => done(false);
+    composer.querySelector('#confirm-ok').onclick = () => done(true);
+  });
+}
+
 function openMenu(petId, x, y) {
   const pet = pets.get(petId);
   const menu = $('#ctxmenu');
@@ -1665,7 +2218,9 @@ function openMenu(petId, x, y) {
   let items;
   if (pet.role === 'supervisor') {
     items = [
-      { label: '✎  新建单 Agent 对话', fn: () => openComposer('supervisor', false) },
+      { label: '✎  继续当前对话', fn: () => openComposer('supervisor', false) },
+      { label: '✎  新建单 Agent 对话', fn: () => startNewConversation('supervisor', false) },
+      { label: '↺  重置主管上下文', fn: () => resetConversationContext('supervisor') },
       { label: '⌘  新建分工任务', fn: () => openComposer('supervisor', true) },
       { label: '◉  查看任务动态', fn: () => openActivity() },
       { separator: true },
@@ -1682,7 +2237,9 @@ function openMenu(petId, x, y) {
     ];
   } else {
     items = [
-      { label: '✎  给它发送消息', fn: () => openComposer(petId, false) },
+      { label: '✎  继续当前对话', fn: () => openComposer(petId, false) },
+      { label: '＋  新建会话', fn: () => startNewConversation(petId, false) },
+      { label: '↺  重置上下文', fn: () => resetConversationContext(petId) },
       { label: '打开最近会话', fn: () => openLatestThread(petId) },
       { label: '详情 / 切换模型', fn: () => openPanel(petId, 'overview') },
       { separator: true },
@@ -1771,13 +2328,13 @@ function measureComposerHeight(width) {
 }
 
 function composerStackHtml(target, mode, draft) {
-  const roster = ['supervisor', 'w1', 'w2', 'w3', 'w4'].map(id => pets.get(id)).filter(Boolean);
+  const roster = ['w1', 'w2', 'w3', 'w4'].map(id => pets.get(id)).filter(Boolean);
   const project = currentProject();
-  const defaults = mode ? new Set(['supervisor', target.id, 'w1', 'w2']) : new Set([target.id]);
+  const defaults = mode ? new Set(target.role === 'worker' ? [target.id, 'w1', 'w2'] : ['w1', 'w2']) : new Set([target.id]);
   return '<div class="composer-stack">' +
-    '<section class="delegation-options' + (mode ? '' : ' hidden') + '" id="c-delegation-options"><div class="inline-heading"><span><b>参与 Agent</b><small>由 ' + esc(target.name) + ' 接收并协调</small></span><button class="text-btn" id="c-open-codex">在 Codex 中打开</button></div><div class="agent-grid">' + roster.map(pet =>
-      '<label class="agent-choice"><input type="checkbox" data-pet="' + pet.id + '"' + (defaults.has(pet.id) ? ' checked' : '') + '><span class="agent-chip"><i class="member-color c-' + pet.id + '"></i><b>' + esc(pet.name) + '</b><small>' + esc(modelName(pet.model)) + '</small></span><select data-model="' + pet.id + '">' + modelOptions(pet.model) + '</select></label>'
-    ).join('') + '</div><label class="planner-row"><input type="checkbox" id="c-planner" checked><span>由主管先分析并拆分任务</span></label></section>' +
+    '<section class="delegation-options' + (mode ? '' : ' hidden') + '" id="c-delegation-options"><div class="inline-heading"><span><b>参与 Agent</b><small>由 ' + esc(pets.get('supervisor').name) + ' 主管规划、检查和终审</small></span><div class="inline-actions"><button class="text-btn" id="c-recommend">智能推荐</button><button class="text-btn" id="c-open-codex">在 Codex 中打开</button></div></div><div class="recommendation-note hidden" id="c-recommendation-note"></div><div class="agent-grid">' + roster.map(pet =>
+      '<label class="agent-choice"><input type="checkbox" data-pet="' + pet.id + '"' + (defaults.has(pet.id) ? ' checked' : '') + '><span class="agent-chip"><i class="member-color c-' + pet.id + '"></i><b>' + esc(pet.name) + '</b><small>' + esc(modelName(pet.model)) + '</small></span><select data-model="' + pet.id + '">' + modelOptions(pet.model) + '</select><span class="agent-capabilities" data-agent-capabilities="' + pet.id + '">' + capabilityBadges(pet.model, true) + '</span></label>'
+    ).join('') + '</div><input class="hidden" type="checkbox" id="c-planner" checked><div class="planner-row"><span>推荐只预选参与者；你仍需确认 Agent、模型与主管计划</span></div></section>' +
     '<div class="composer-project-line' + (mode ? '' : ' hidden') + '" id="c-project-line"><span>共享工作区</span><button class="project-trigger" id="c-project-trigger">' + esc(project ? project.name : '选择或新建项目') + '⌄</button><span class="workspace-note">结果与记忆由所选 Agent 共享</span></div>' +
     '<div class="composer-files hidden" id="c-files"></div>' +
     '<div class="composer-input-row"><button class="round-btn' + (!mode && project ? ' hidden' : '') + '" id="c-project-button" title="选择项目">＋</button><textarea id="c-text" rows="1" placeholder="发送给 ' + esc(target.name) + ' · ' + esc(modelName(target.model)) + '">' + esc(draft) + '</textarea>' +
@@ -1791,6 +2348,7 @@ function openComposer(targetPetId = 'supervisor', requestedDelegation = delegati
   $('#panel').classList.add('hidden');
   closeActivity(true);
   $('#ctxmenu').classList.add('hidden');
+  hideLiveTaskCard();
   openPanelFor = null;
   const target = pets.get(targetPetId) || pets.get('supervisor');
   const mode = !!requestedDelegation;
@@ -1804,6 +2362,8 @@ function openComposer(targetPetId = 'supervisor', requestedDelegation = delegati
   target.el.classList.add('composer-open');
   composer.getAnimations().forEach(animation => animation.cancel());
   composer.className = 'ui pet-composer' + (reusable ? '' : ' morphing');
+  composer.setAttribute?.('role', 'dialog');
+  composer.setAttribute?.('aria-label', mode ? '分工任务输入' : '对话输入');
   composer.removeAttribute('style');
   composer.innerHTML = composerStackHtml(target, mode, draft);
   composer.classList.remove('hidden');
@@ -1856,11 +2416,15 @@ function revealDelegation(target, mode) {
 function resizeComposer(pet, mode, animate = true) {
   const composer = $('#composer');
   if (!composer.classList.contains('pet-composer')) return;
+  if (!animate) {
+    composer.getAnimations().forEach(animation => animation.cancel());
+    composer.classList.remove('morphing');
+    composer.classList.add('ready');
+  }
   const width = composerWidth(mode);
   const height = measureComposerHeight(width);
   const to = composerLayout(pet, mode, height);
   if (!animate) {
-    composer.getAnimations().forEach(animation => animation.cancel());
     applyComposerRect(to);
     return;
   }
@@ -1875,7 +2439,7 @@ function conversationPreview(petId) {
 
 function projectPickerHtml(query = '') {
   const normalized = query.trim().toLowerCase();
-  const projects = (S.projects || []).filter(project => !normalized || project.name.toLowerCase().includes(normalized) || project.path.toLowerCase().includes(normalized));
+  const projects = (S.projects || []).filter(project => !project.archived).filter(project => !normalized || project.name.toLowerCase().includes(normalized) || project.path.toLowerCase().includes(normalized));
   return '<div class="new-project-row"><input id="c-new-project" type="text" placeholder="新建项目"><button class="btn primary compact" id="c-create-project">创建</button></div>' +
     '<input class="project-search" id="c-project-search" type="search" value="' + esc(query) + '" placeholder="搜索已有项目">' +
     '<div class="project-list">' + (projects.length ? projects.map(project => '<button data-pick-project="' + esc(project.id) + '" class="project-option' + (project.id === S.activeProjectId ? ' active' : '') + '"><b>' + esc(project.name) + '</b><small>' + esc(project.path) + '</small></button>').join('') : '<div class="empty-state">没有匹配项目</div>') + '</div>' +
@@ -1893,11 +2457,22 @@ function bindComposer(targetPetId, initialMode) {
     composer.querySelector('#c-project-button').classList.toggle('hidden', !mode && !!currentProject());
     await setDelegationMode(mode, false);
     resizeComposer(pets.get(targetPetId), mode);
+    if (mode && composer.querySelector('#c-text').value.trim().length >= 12) setTimeout(() => applyAgentRecommendation(true), 120);
   };
   composer.querySelector('#c-project-button').onclick = () => toggleProjectPicker(true);
   composer.querySelector('#c-project-trigger').onclick = () => toggleProjectPicker();
   bindComposerProjectPicker(targetPetId, () => mode);
   composer.querySelector('#c-open-codex').onclick = () => openLatestThread(null);
+  const recommend = composer.querySelector('#c-recommend');
+  if (recommend) recommend.onclick = () => applyAgentRecommendation();
+  composer.querySelectorAll('[data-model]').forEach(select => {
+    select.onchange = () => {
+      const holder = composer.querySelector('[data-agent-capabilities="' + select.dataset.model + '"]');
+      if (holder) holder.innerHTML = capabilityBadges(select.value || null, true);
+      const chip = select.closest('.agent-choice').querySelector('.agent-chip small');
+      if (chip) chip.textContent = modelName(select.value || null);
+    };
+  });
   composer.querySelector('#c-send').onclick = () => submitComposer(targetPetId, mode);
   composer.querySelector('#c-text').onkeydown = event => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -1906,6 +2481,34 @@ function bindComposer(targetPetId, initialMode) {
     }
   };
   renderComposerFiles();
+  if (initialMode && composer.querySelector('#c-text').value.trim().length >= 12) setTimeout(() => applyAgentRecommendation(true), 120);
+}
+
+async function applyAgentRecommendation(automatic = false) {
+  const composer = $('#composer');
+  const text = composer.querySelector('#c-text') && composer.querySelector('#c-text').value.trim();
+  const note = composer.querySelector('#c-recommendation-note');
+  if (!text) {
+    if (!automatic) bubble('supervisor', '先输入任务内容，才能推荐参与 Agent。', 3800);
+    return;
+  }
+  const button = composer.querySelector('#c-recommend');
+  if (button) { button.disabled = true; button.textContent = '分析中…'; }
+  const result = await window.petOffice.recommendAgents({ taskText: text, projectId: S.activeProjectId });
+  if (button) { button.disabled = false; button.textContent = '重新推荐'; }
+  if (!result || !Array.isArray(result.selected)) return;
+  const selected = new Map(result.selected.map(item => [item.petId, item]));
+  composer.querySelectorAll('[data-pet]').forEach(input => { input.checked = selected.has(input.dataset.pet); });
+  for (const item of result.selected) {
+    const select = composer.querySelector('[data-model="' + item.petId + '"]');
+    if (select && item.model != null && [...select.options].some(option => option.value === item.model)) select.value = item.model;
+    if (select && typeof select.onchange === 'function') select.onchange();
+  }
+  if (note) {
+    note.classList.remove('hidden');
+    note.innerHTML = '<b>推荐完成，等待你确认</b><span>' + result.selected.map(item => esc((pets.get(item.petId) && pets.get(item.petId).name) || item.petId) + ' · ' + esc(item.reason)).join('；') + '</span>';
+  }
+  resizeComposer(pets.get(composerPetId) || pets.get('supervisor'), true);
 }
 
 function humanSize(bytes) {
@@ -1918,14 +2521,23 @@ function humanSize(bytes) {
 function renderComposerFiles() {
   const box = $('#c-files');
   if (!box) return;
+  const wasHidden = box.classList.contains('hidden');
+  const resizeForAttachments = () => requestAnimationFrame(() => {
+    const target = composerPetId && pets.get(composerPetId);
+    const delegation = $('#c-delegation');
+    if (target && !$('#composer').classList.contains('hidden')) resizeComposer(target, !!(delegation && delegation.checked), false);
+  });
   if (!composerAttachments.length) {
     box.classList.add('hidden');
     box.innerHTML = '';
+    if (!wasHidden) resizeForAttachments();
     return;
   }
   box.classList.remove('hidden');
+  box.setAttribute('role', 'list');
+  box.setAttribute('aria-label', '待发送附件');
   box.innerHTML = composerAttachments.map((file, index) =>
-    '<span class="file-chip" title="' + esc(file.relPath || file.name) + '"><i>' + esc(file.kind || '文件') + '</i><b>' + esc(file.name) + '</b><small>' + esc(humanSize(file.size)) + '</small><button type="button" data-file-remove="' + index + '" aria-label="移除附件">×</button></span>'
+    '<article class="file-chip attachment-card" role="listitem" title="' + esc(file.relPath || file.name) + '"><i class="attachment-icon">' + esc(String(file.kind || '文件').slice(0, 1)) + '</i><span><b>' + esc(file.name) + '</b><small>' + esc(file.kind || '文件') + ' · ' + esc(humanSize(file.size)) + '</small></span><button type="button" data-file-remove="' + index + '" aria-label="移除 ' + esc(file.name) + '">×</button></article>'
   ).join('');
   box.querySelectorAll('[data-file-remove]').forEach(button => {
     button.onclick = () => {
@@ -1933,6 +2545,7 @@ function renderComposerFiles() {
       renderComposerFiles();
     };
   });
+  resizeForAttachments();
 }
 
 function attachmentPromptBlock() {
@@ -2029,13 +2642,13 @@ async function submitComposer(targetPetId, mode) {
     participants = [...composer.querySelectorAll('[data-pet]')].filter(input => input.checked).map(input => {
       const pet = pets.get(input.dataset.pet);
       const model = composer.querySelector('[data-model="' + pet.id + '"]').value || null;
-      return { petId: pet.id, name: pet.name, model, use: true };
+      return { petId: pet.id, name: pet.name, model, fallbackModel: null, use: true };
     });
     if (!participants.length) {
       bubble('supervisor', '请至少选择一个 Agent', 3500);
       return;
     }
-    usePlanner = composer.querySelector('#c-planner').checked && participants.length > 1;
+    usePlanner = true;
   } else {
     const pet = pets.get(targetPetId);
     participants = [{ petId: pet.id, name: pet.name, model: pet.model, use: true }];
@@ -2099,7 +2712,7 @@ function showConfirm(taskText, participants, usePlanner, mode) {
     go.textContent = '正在启动…';
     const composed = taskText + attachmentPromptBlock();
     const result = mode
-      ? await window.petOffice.startTask({ taskText: composed, projectId: S.activeProjectId, participants, usePlanner })
+      ? await window.petOffice.createMissionDraft({ taskText: composed, projectId: S.activeProjectId, participants })
       : await window.petOffice.startChat({
         taskText: composed,
         projectId: S.activeProjectId,
@@ -2112,8 +2725,55 @@ function showConfirm(taskText, participants, usePlanner, mode) {
       bubble('supervisor', (result && result.error) || '启动失败', 6000);
       return;
     }
+    if (mode) {
+      missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
+      showMissionPlan(result.mission, taskText, participants);
+      bubble('supervisor', '依赖计划已生成，请确认后开工。', 7000);
+      return;
+    }
     closeComposer(true);
     summonWorkers(participants.filter(item => item.petId !== 'supervisor').map(item => item.petId), false);
     bubble('supervisor', mode ? '收到，开始分工！' : '收到，开始处理。', 5000);
+  };
+}
+
+function showMissionPlan(mission, originalText, participants) {
+  const composer = $('#composer');
+  const boss = pets.get('supervisor');
+  const width = Math.min(620, Math.max(430, composerWidth(true) + 120));
+  const current = composerBox();
+  const waves = new Map();
+  for (const task of mission.tasks || []) {
+    if (!waves.has(task.wave)) waves.set(task.wave, []);
+    waves.get(task.wave).push(task);
+  }
+  const waveHtml = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, items]) =>
+    '<section class="plan-wave"><header><b>阶段 ' + (Number(wave) + 1) + '</b><small>' + items.length + ' 个任务</small></header>' + items.map(task =>
+      '<article class="plan-node"><span class="member-color c-' + esc(task.assigneePetId) + '"></span><div><b>' + esc(task.title) + '</b><p>' + esc(short(task.brief, 180)) + '</p><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + ' · ' + esc(task.mode) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small></div></article>'
+    ).join('') + '</section>'
+  ).join('');
+  composer.getAnimations().forEach(animation => animation.cancel());
+  composer.className = 'ui pet-composer mission-preview ready';
+  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>主管计划</b><small>确认后才会创建隔离工作区并启动 Agent</small></span><button class="inline-close" id="c-close" title="收起">×</button></div><div class="mission-plan-scroll">' + waveHtml + '</div><div class="approval-note">每个依赖波次结束后由主管检查；失败节点最多自动重派一次。冲突和高风险回写会暂停等待你。</div><div class="composer-foot"><button class="btn" id="c-back">返回修改</button><button class="btn" id="c-replan">重新规划</button><button class="btn primary" id="c-confirm-mission">确认并开工</button></div></div>';
+  const height = Math.min(Math.round(innerHeight * .72), measureComposerHeight(width));
+  animateComposerRect(current, composerLayout(boss, true, height), 220);
+  composer.querySelector('#c-close').onclick = () => closeComposer();
+  composer.querySelector('#c-back').onclick = () => openComposer('supervisor', true, originalText);
+  composer.querySelector('#c-replan').onclick = async event => {
+    const button = event.currentTarget;
+    button.disabled = true; button.textContent = '规划中…';
+    const result = await window.petOffice.regenerateMission(mission.id);
+    if (!result || !result.ok) { button.disabled = false; button.textContent = '重新规划'; bubble('supervisor', (result && result.error) || '重新规划失败', 7000); return; }
+    missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
+    showMissionPlan(result.mission, originalText, participants);
+  };
+  composer.querySelector('#c-confirm-mission').onclick = async event => {
+    const button = event.currentTarget;
+    button.disabled = true; button.textContent = '启动中…';
+    const result = await window.petOffice.confirmMission(mission.id);
+    if (!result || !result.ok) { button.disabled = false; button.textContent = '确认并开工'; bubble('supervisor', (result && result.error) || '启动失败', 7000); return; }
+    closeComposer(true);
+    summonWorkers(participants.map(item => item.petId), false);
+    bubble('supervisor', '计划已确认，团队开始执行。', 6000);
   };
 }

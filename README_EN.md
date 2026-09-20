@@ -10,7 +10,7 @@ Live Codex tasks, multi-model delegation, project memory, approvals, and attachm
 [简体中文](README.md) · [English](README_EN.md)
 
 [![CI](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml/badge.svg)](https://github.com/Gu-kai-lei/Open-Pet-Office/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.10.0-f5a623)
+![Version](https://img.shields.io/badge/version-0.13.0-f5a623)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
 
@@ -22,6 +22,32 @@ Live Codex tasks, multi-model delegation, project memory, approvals, and attachm
 
 > [!IMPORTANT]
 > This is an early Windows preview. It can already handle real work, but APIs, data formats, and interactions may still evolve quickly.
+
+### v0.13.0: desktop experience and release reliability
+
+- Follow the cursor, stay on the primary display, or target a specific monitor, with safe viewport clamping after display changes.
+- Avoid fullscreen apps by moving the supervisor to a corner, hiding the overlay, or leaving it unchanged.
+- Choose quiet, standard, or detailed notifications without stopping live task state updates.
+- Use rebuilt attachment cards, font sizing and font choices, keyboard navigation, visible focus, and screen-reader announcements.
+- Keep redacted crash reports local and check GitHub Releases for updates from the settings page.
+- Portable builds use real Windows signing when `CSC_LINK` / `CSC_KEY_PASSWORD` are provided and report the detected signature status.
+
+### v0.12.0: project and session workspace
+
+- Create, continue, and reset agent context from a project session list.
+- Rename, archive, restore, or unregister projects without deleting source folders.
+- Filter the task center by project and pin any live task or Mission card.
+- See code, vision, long-context, speed, and cost capability labels for routed models.
+- Let Pet Office recommend participants while keeping Agent, model, and plan confirmation under user control.
+
+### v0.11.0: a real supervisor agent
+
+- Delegation is now a persistent Mission with a dependency plan that requires confirmation before execution.
+- Workers run in dependency waves, followed by supervisor acceptance, retry, reassignment, or failure decisions.
+- Clean Git projects use isolated worktrees; dirty Git and non-Git projects use isolated snapshots.
+- Structured reports and change manifests replace raw response concatenation.
+- Conflicts, project drift, deletions, and out-of-scope changes pause before write-back.
+- Mission dependencies, retries, recovery, and final review appear in the activity center.
 
 ## What it is
 
@@ -38,7 +64,7 @@ Open Pet Office is not just a desktop-pet skin. It is a **visual desktop collabo
 | Desktop experience | Agent collaboration | Projects and safety |
 | --- | --- | --- |
 | 🐾 Transparent always-on-top pets | 🧠 1 supervisor + up to 4 workers | 📁 Shared project workspace |
-| 🖱️ Dragging with saved positions | ⚡ Parallel execution | 📝 `HIVE.md` / `MEMORY.md` |
+| 🖱️ Dragging with saved positions | ⚡ Dependency-wave execution | 📝 Missions / project memory |
 | 💬 Inline expanding composer | 🔀 Per-pet model selection | 📎 Drag-and-drop inbox |
 | 🔔 Live task cards and activity center | 🧩 Supervisor planning and synthesis | ✅ Command, file, and permission approvals |
 | 🎨 Petdex animated appearances | 🔗 One-click return to Codex | 🔒 Redaction and sandboxing |
@@ -80,8 +106,9 @@ Prompt
 1. Turn on Delegation from the right side of the composer.
 2. Select an existing project or create one from the project picker.
 3. Choose participating agents and a model for each agent.
-4. The supervisor can plan first, then dispatch parallel work.
-5. Workers share project files and memory; the supervisor produces the final synthesis.
+4. The supervisor creates a wave-based dependency plan for confirmation.
+5. Every wave is reviewed; a failed node may be retried or reassigned once.
+6. Accepted changes are integrated and reviewed in isolation before safe write-back.
 
 ## Live tasks and the activity center
 
@@ -127,16 +154,15 @@ Whether a model can understand images, PDFs, or video depends on that model and 
 
 ```text
 <project>/
-├─ HIVE.md       # Shared team conventions
-├─ MEMORY.md     # Long-term project memory
 ├─ inbox/        # Dropped attachments
-├─ tasks/        # Briefs, plans, and results
-└─ messages/     # Reserved for agent messages
+└─ .pet-office/
+   ├─ MEMORY.md  # Shared project memory
+   └─ missions/  # Plans, events, messages, reviews, and artifacts
 ```
 
-- Agents in one project read the same workspace.
+- Each worker uses an isolated worktree or snapshot to avoid concurrent overwrites.
 - Each model can keep its own conversation while project files and memory remain shared.
-- The latest 100 tasks are stored locally for history and conversation recovery.
+- Interrupted Missions are recoverable after restart without blindly repeating accepted work.
 - The `bridge/` protocol lets a Codex main thread dispatch work and collect summaries.
 
 ## Models and quota
@@ -226,7 +252,7 @@ npm test
 npm run dist
 ```
 
-The portable build is written to `dist/Pet-Office-0.10.0-portable.exe`. Startup launch is effective for packaged builds.
+The portable build is written to `dist/Pet-Office-0.13.0-portable.exe`. Startup launch is effective for packaged builds. An unsigned build remains supported, but Settings clearly reports that no valid signature was detected.
 
 ## Privacy and security boundaries
 
@@ -265,7 +291,7 @@ Tests cover session aggregation, partial lines and rotation, lifecycle state, re
 - [ ] Project-memory retrieval and visualization
 - [ ] Richer agent messages, dependencies, and discussion views
 - [ ] More provider quota adapters and budget policies
-- [ ] Installer, automatic updates, and signed releases
+- [x] GitHub Release update checks and optional signed releases
 - [ ] Optional cross-platform support
 
 ## Acknowledgements and trademarks

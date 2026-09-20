@@ -8,7 +8,7 @@ const cfg = require('./config');
 // Codex Desktop only shows locally-created conversations in its normal task list
 // when they carry the desktop client's originator. Pet Office behaves as a
 // desktop companion, so new supervisor conversations use the same originator.
-const CLIENT_INFO = { name: 'Codex Desktop', title: 'Pet Office', version: '0.10.0' };
+const CLIENT_INFO = { name: 'Codex Desktop', title: 'Pet Office', version: '0.10.1' };
 
 class AppServerClient {
   constructor() {
@@ -19,6 +19,9 @@ class AppServerClient {
     this.listeners = new Set();
     this.readyPromise = null;
     this.closed = false;
+    this.lastError = null;
+    this.lastStartedAt = 0;
+    this.defaultTimeoutMs = 30000;
   }
 
   onEvent(listener) {
@@ -35,6 +38,7 @@ class AppServerClient {
   start() {
     if (this.readyPromise) return this.readyPromise;
     this.closed = false;
+    this.lastStartedAt = Date.now();
     this.readyPromise = new Promise((resolve, reject) => {
       const command = process.platform === 'win32' ? 'cmd.exe' : 'codex';
       const args = process.platform === 'win32'
@@ -51,22 +55,35 @@ class AppServerClient {
       this.child.stderr.setEncoding('utf8');
       this.child.stderr.on('data', chunk => {
         const text = String(chunk).trim();
-        if (text) cfg.log('app-server stderr: ' + text.slice(0, 400));
+        if (text) {
+          this.lastError = text.slice(0, 600);
+          cfg.log('app-server stderr: ' + text.slice(0, 400));
+        }
       });
       this.child.on('exit', code => {
         cfg.log('app-server exited: ' + code);
         this.child = null;
         this.readyPromise = null;
-        for (const [, entry] of this.pending) entry.reject(new Error('app-server exited: ' + code));
+        for (const [, entry] of this.pending) {
+          clearTimeout(entry.timer);
+          entry.reject(new Error('app-server exited: ' + code));
+        }
         this.pending.clear();
         this.emit({ type: 'closed', code });
       });
-      this.request('initialize', { clientInfo: CLIENT_INFO, capabilities: null })
+      this.request('initialize', { clientInfo: CLIENT_INFO, capabilities: null }, 20000)
         .then(() => {
           this.notify('initialized', {});
           resolve(this);
         })
-        .catch(reject);
+        .catch(error => {
+          this.lastError = error.message;
+          const child = this.child;
+          this.child = null;
+          this.readyPromise = null;
+          try { if (child) child.kill(); } catch {}
+          reject(error);
+        });
     });
     return this.readyPromise;
   }
@@ -89,6 +106,7 @@ class AppServerClient {
       const entry = this.pending.get(message.id);
       if (entry) {
         this.pending.delete(message.id);
+        clearTimeout(entry.timer);
         if (message.error) entry.reject(new Error(message.error.message || JSON.stringify(message.error)));
         else entry.resolve(message.result);
       }
@@ -119,13 +137,20 @@ class AppServerClient {
     try { this.child.stdin.write(JSON.stringify({ id, result }) + '\n'); } catch {}
   }
 
-  request(method, params) {
+  request(method, params, timeoutMs = this.defaultTimeoutMs) {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const error = new Error(method + ' 请求超时（' + Math.round(timeoutMs / 1000) + ' 秒）');
+        this.lastError = error.message;
+        reject(error);
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, method });
       try {
         this.child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
       } catch (error) {
+        clearTimeout(timer);
         this.pending.delete(id);
         reject(error);
       }
@@ -158,7 +183,7 @@ class AppServerClient {
       threadId,
       model: model || null,
       input: [{ type: 'text', text: String(text || '') }],
-    });
+    }, 60000);
     cfg.log('app-server turn/start -> ' + JSON.stringify(result).slice(0, 200));
     return result;
   }
@@ -193,12 +218,26 @@ class AppServerClient {
 
   stop() {
     this.closed = true;
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('app-server stopped'));
+    }
+    this.pending.clear();
     if (this.child) {
       try { this.child.stdin.end(); } catch {}
       try { this.child.kill(); } catch {}
     }
     this.child = null;
     this.readyPromise = null;
+  }
+
+  health() {
+    return {
+      running: !!this.child,
+      pendingRequests: this.pending.size,
+      lastStartedAt: this.lastStartedAt || null,
+      lastError: this.lastError,
+    };
   }
 }
 

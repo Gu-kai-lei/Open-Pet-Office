@@ -17,12 +17,13 @@ function fixture(saved = true) {
     dispatcher: { ensureProjectDirs() {} },
     petThreads: new Map(saved ? [['p1:supervisor', 'saved-thread']] : []),
     loadedThreads: new Set(), startingChats: new Set(), liveChats: new Map(),
-    appServerIdleTimer: null, clearTimeout() {},
+    appServerIdleTimer: null, clearTimeout() {}, scheduleAppServerIdleStop() {},
     appServer: {
       resumeThread: async () => { calls.push('resume'); },
       startThread: async () => { calls.push('create'); return { threadId: 'new-thread' }; },
       setThreadName: async () => { calls.push('name'); },
       startTurn: async () => { calls.push('turn'); return { turnId: 'turn' }; },
+      unsubscribeThread: async () => { calls.push('unsubscribe'); },
     },
     cfg: { saveState() {}, log() {} }, persistStandaloneTask() {}, send() {}, finishChat() {},
   };
@@ -47,9 +48,12 @@ function fixture(saved = true) {
   assert.equal(failed.context.startingChats.size, 0);
   const occupied = fixture();
   occupied.context.appServer.resumeThread = async () => { occupied.calls.push('resume'); throw new Error('thread saved-thread already has an active writer'); };
-  assert.equal((await occupied.run()).threadId, 'new-thread');
-  assert.deepEqual(occupied.calls, ['resume', 'create', 'name', 'turn']);
-  assert.equal(occupied.context.state.conversations['p1:supervisor'], 'new-thread');
+  const occupiedResult = await occupied.run();
+  assert.equal(occupiedResult.ok, false);
+  assert.equal(occupiedResult.code, 'THREAD_OWNED_BY_CODEX');
+  assert.equal(occupiedResult.threadId, 'saved-thread');
+  assert.deepEqual(occupied.calls, ['resume']);
+  assert.equal(occupied.context.petThreads.get('p1:supervisor'), 'saved-thread');
   const racing = fixture(false);
   let release;
   racing.context.appServer.startThread = () => new Promise(resolve => { release = resolve; });
@@ -57,5 +61,5 @@ function fixture(saved = true) {
   assert.equal((await racing.run()).ok, false);
   release({ threadId: 'new-thread' });
   assert.equal((await first).ok, true);
-  console.log('PASS: restore, persist, duplicate send, occupied fallback, failed resume, concurrent creation');
+  console.log('PASS: restore, persist, duplicate send, explicit ownership conflict, failed resume, concurrent creation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

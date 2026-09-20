@@ -14,6 +14,15 @@ const files = [
   'src/appserver.js',
   'src/session-monitor.js',
   'src/inbox.js',
+  'src/diagnostics.js',
+  'src/mission-store.js',
+  'src/mission-workspace.js',
+  'src/mission-manager.js',
+  'src/model-capabilities.js',
+  'src/recommender.js',
+  'src/project-service.js',
+  'src/release-manager.js',
+  'src/fullscreen-probe.js',
   'src/main.js',
   'src/preload.js',
   'renderer/app.js',
@@ -25,6 +34,10 @@ const files = [
   'scripts/session-monitor-test.js',
   'scripts/activity-state-test.js',
   'scripts/inbox-test.js',
+  'scripts/stability-test.js',
+  'scripts/mission-test.js',
+  'scripts/v012-test.js',
+  'scripts/v013-test.js',
 ];
 
 let failed = false;

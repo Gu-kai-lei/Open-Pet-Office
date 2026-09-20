@@ -6,6 +6,7 @@ const { DIRS, log } = require('./config');
 let handler = null;
 const pending = new Map();
 const handled = new Set();
+let watcher = null;
 
 function setHandler(fn) { handler = fn; }
 
@@ -19,13 +20,20 @@ function startWatching() {
         processOrder(path.join(DIRS.toPets, name));
       }, 350));
     };
-    fs.watch(DIRS.toPets, { persistent: true }, (evt, file) => {
+    watcher = fs.watch(DIRS.toPets, { persistent: true }, (evt, file) => {
       const name = String(file || '');
       schedule(name);
     });
     // 关机或应用未启动时投递的任务，下一次启动仍应被处理。
     for (const name of fs.readdirSync(DIRS.toPets)) schedule(name);
   } catch (e) { log('bridge watch: ' + e.message); }
+}
+
+function stopWatching() {
+  try { if (watcher) watcher.close(); } catch {}
+  watcher = null;
+  for (const timer of pending.values()) clearTimeout(timer);
+  pending.clear();
 }
 
 function processOrder(full, tries = 0) {
@@ -59,4 +67,4 @@ function writeResult(name, content, meta) {
   } catch (e) { log('bridge writeResult: ' + e.message); return null; }
 }
 
-module.exports = { startWatching, setHandler, writeResult };
+module.exports = { startWatching, stopWatching, setHandler, writeResult };

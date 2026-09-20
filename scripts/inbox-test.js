@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { ingestFiles, fileKind, safeFileName } = require('../src/inbox');
+const { ingestFiles, ingestFilesAsync, fileKind, safeFileName } = require('../src/inbox');
+
+(async () => {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-office-inbox-'));
 const project = path.join(root, 'project');
@@ -57,5 +59,16 @@ assert.match(oversized.error, /超过/);
 assert.equal(ingestFiles({ paths: [], projectPath: project }).ok, false);
 assert.equal(ingestFiles({ paths: [report] }).ok, false);
 
+const progress = [];
+const asyncResult = await ingestFilesAsync({
+  paths: [photo, script],
+  projectPath: project,
+  onProgress: event => progress.push(event),
+});
+assert.equal(asyncResult.ok, true);
+assert.equal(asyncResult.files.length, 2);
+assert.equal(progress.filter(event => event.phase === 'copied').length, 2);
+
 fs.rmSync(root, { recursive: true, force: true });
 console.log('inbox: copy, rename, filtering, limits and kinds OK');
+})().catch(error => { console.error(error); process.exitCode = 1; });
