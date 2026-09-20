@@ -54,6 +54,17 @@
 
 需要第三方模型？安装可选的 [OpenCodex](https://github.com/lidge-jun/opencodex)，即可把 DeepSeek、GLM 等模型路由到 Codex。详细步骤见 [快速上手](docs/GETTING_STARTED.md)。
 
+## 📦 最近更新
+
+**v0.13.0 · 2026-09-20**
+
+- 🖥️ 多显示器选择与全屏应用避让（角落缩小 / 完全隐藏 / 保持原样）
+- 🔔 安静、标准、详细三档系统通知，实时任务状态不受影响
+- 🧩 附件卡片、字号字体与键盘无障碍全面优化
+- 🛡️ 本地脱敏崩溃报告、GitHub Release 更新检查与可选代码签名
+
+完整迭代计划与历史版本见 🗺️ [路线图](docs/ROADMAP.md)。
+
 ## 🚀 从一句话到团队交付
 
 ```mermaid

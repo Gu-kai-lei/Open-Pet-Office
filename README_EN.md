@@ -54,6 +54,17 @@ The public build is currently unsigned, so Windows SmartScreen may show an unkno
 
 Want third-party models? The optional [OpenCodex](https://github.com/lidge-jun/opencodex) layer can route DeepSeek, GLM, and other providers into Codex. See the [getting started guide](docs/GETTING_STARTED_EN.md) for details.
 
+## 📦 What's new
+
+**v0.13.0 · 2026-09-20**
+
+- 🖥️ Multi-display placement and fullscreen avoidance (corner, hide, or keep)
+- 🔔 Quiet, standard, and detailed notification levels without interrupting live task state
+- 🧩 Rebuilt attachment cards plus typography and accessibility improvements
+- 🛡️ Local redacted crash reports, GitHub Release update checks, and optional code signing
+
+See the 🗺️ [roadmap](docs/ROADMAP_EN.md) for the full iteration plan and previous versions.
+
 ## 🚀 From one prompt to a reviewed delivery
 
 ```mermaid
