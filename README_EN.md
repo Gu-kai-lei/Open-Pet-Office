@@ -54,7 +54,7 @@ The public build is currently unsigned, so Windows SmartScreen may show an unkno
 
 Want third-party models? The optional [OpenCodex](https://github.com/lidge-jun/opencodex) layer can route DeepSeek, GLM, and other providers into Codex. See the [getting started guide](docs/GETTING_STARTED_EN.md) for details.
 
-## From one prompt to a reviewed delivery
+## 🚀 From one prompt to a reviewed delivery
 
 ```mermaid
 flowchart LR
@@ -74,22 +74,22 @@ flowchart LR
 
 With Delegation off, the pet is a lightweight entry point to a persistent Codex conversation. With Delegation on, the same composer becomes a recoverable Mission workflow.
 
-## What you get
+## 🧰 What you get
 
 | Capability | Experience |
 | --- | --- |
-| **Live Codex tasks** | Read-only monitoring of local Codex sessions, including work started directly in Codex Desktop |
-| **1 + 4 agent team** | One supervisor and up to four workers, each with its own model |
-| **Persistent Missions** | Dependency graph, execution waves, structured reports, stage reviews, reassignment, and restart recovery |
-| **Isolated workspaces** | Git worktrees for clean repositories; snapshots for dirty Git and non-Git projects |
-| **Projects and sessions** | Create, continue, or reset context; rename, archive, restore, filter, and clean attachments |
-| **Approvals and questions** | Handle command approvals, agent questions, conflicts, and recovery from one activity center |
-| **File drop** | Drop files onto a pet to copy them into the project `inbox/` and attach relative paths |
-| **Models and quota** | Codex five-hour and weekly limits, plus provider balances when APIs are available |
-| **Petdex appearances** | Multiple animated pets, with a direct route to discover more on Petdex |
-| **Desktop reliability** | Multiple displays, fullscreen avoidance, tray controls, shortcuts, notification levels, and reduced motion |
+| 🐾 **Live Codex tasks** | Read-only monitoring of local Codex sessions, including work started directly in Codex Desktop |
+| 🧠 **1 + 4 agent team** | One supervisor and up to four workers, each with its own model |
+| 🗂️ **Persistent Missions** | Dependency graph, execution waves, structured reports, stage reviews, reassignment, and restart recovery |
+| 🌳 **Isolated workspaces** | Git worktrees for clean repositories; snapshots for dirty Git and non-Git projects |
+| 📁 **Projects and sessions** | Create, continue, or reset context; rename, archive, restore, filter, and clean attachments |
+| ✅ **Approvals and questions** | Handle command approvals, agent questions, conflicts, and recovery from one activity center |
+| 📎 **File drop** | Drop files onto a pet to copy them into the project `inbox/` and attach relative paths |
+| 📊 **Models and quota** | Codex five-hour and weekly limits, plus provider balances when APIs are available |
+| 🎨 **Petdex appearances** | Multiple animated pets, with a direct route to discover more on Petdex |
+| 🖥️ **Desktop reliability** | Multiple displays, fullscreen avoidance, tray controls, shortcuts, notification levels, and reduced motion |
 
-## Live status without interruption
+## 🔔 Live status without interruption
 
 The supervisor's live card shows the active model, task summary, current stage, and latest safe progress. With several tasks running, it shows the most recently updated task and the remaining count. Click it to return to the matching Codex task.
 
@@ -101,7 +101,7 @@ The bell activity center brings together:
 
 Desktop updates are redacted and truncated. Full command output, system prompts, tokens, and secrets never belong in a pet bubble.
 
-## Multi-model collaboration
+## 🌐 Multi-model collaboration
 
 Open Pet Office uses Codex as the conversation and execution surface, with OpenCodex as an optional router for compatible providers. Every pet can select a different model. The supervisor can use code, vision, long-context, speed, and cost tags to recommend participants, while you retain final control over agents and models.
 
@@ -111,7 +111,7 @@ Open Pet Office uses Codex as the conversation and execution surface, with OpenC
 | DeepSeek, GLM, and others | OpenCodex provider | Balance when the provider exposes a compatible API |
 | Other Codex-visible models | Custom OpenCodex config | Added to the model catalog and selectable per agent |
 
-## How Missions protect your project
+## 🔒 How Missions protect your project
 
 Mission plans and review records live under `.pet-office/` in the project. Runtime copies and complete logs live under `~/.pet-office/runtime/`. Workers write only to their own isolated environments; accepted work enters an integration workspace before the supervisor prepares write-back.
 
@@ -124,7 +124,7 @@ These conditions pause for user action:
 
 Read [Architecture](docs/ARCHITECTURE_EN.md) for the module map, lifecycle, storage, and safety boundaries.
 
-## Documentation
+## 📚 Documentation
 
 | Document | Contents |
 | --- | --- |
@@ -135,7 +135,7 @@ Read [Architecture](docs/ARCHITECTURE_EN.md) for the module map, lifecycle, stor
 | [Contributing](CONTRIBUTING.md) | Local development, tests, and pull request expectations |
 | [Security](SECURITY.md) | Private vulnerability reporting |
 
-## Run from source
+## 🛠️ Run from source
 
 ```powershell
 git clone https://github.com/Gu-kai-lei/Open-Pet-Office.git
@@ -149,7 +149,7 @@ Build the Windows portable executable with `npm run dist`.
 
 Tests cover session aggregation, partial and rotated JSONL, lifecycle states, redaction, activity-panel races, file ingestion, conversation recovery, Mission dependency and isolation behavior, and v0.12 / v0.13 product contracts.
 
-## Privacy and safety
+## 🛡️ Privacy and safety
 
 - Session monitoring is strictly read-only.
 - API keys, authorization headers, tokens, and passwords are redacted from desktop and crash summaries.
@@ -172,7 +172,7 @@ Report security issues privately through [GitHub Security Advisories](https://gi
 
 </details>
 
-## Contributing
+## 🤝 Contributing
 
 Bug reports, interaction problems, and concrete new use cases are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and remove API keys, access tokens, and private conversation content from screenshots or logs.
 
