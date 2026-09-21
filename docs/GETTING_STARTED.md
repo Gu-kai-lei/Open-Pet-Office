@@ -12,6 +12,8 @@
 
 从 [最新 Release](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest) 下载 `Pet-Office-*-portable.exe` 并运行。应用启动后，主管桌宠会出现在桌面上；右键桌宠可隐藏、召唤工作者或退出应用。
 
+Canvas 使用时，可以把浏览器地址栏、课程或作业链接直接拖到桌宠上。按 `Ctrl + Alt + S`（也可右键桌宠选择“截图提问”，或在输入框输入 `/截图`）可选取屏幕区域；截图只会先附加到输入框，输入问题并点击发送后才会交给 Agent。需要登录的 Canvas 内容可能无法通过链接直接读取，此时请附截图或下载后的文件。
+
 当前公开构建尚未配置 Windows 签名证书，SmartScreen 可能显示“未知发布者”。可在 Release 页面核对 SHA-256。
 
 ## 3. 完成第一次对话

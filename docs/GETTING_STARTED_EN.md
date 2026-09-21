@@ -12,6 +12,8 @@ This guide takes you from installation to your first single-agent conversation a
 
 Download `Pet-Office-*-portable.exe` from the [latest Release](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest) and run it. The supervisor pet appears on your desktop. Right-click it to hide the app, summon workers, or exit.
 
+For Canvas, drag an address-bar, course, or assignment link directly onto a pet. Press `Ctrl + Alt + S` (or choose **Screenshot question** from the pet menu, or type `/screenshot`) to capture a region. The image is only attached to the composer; it is not sent until you add a question and confirm. Login-only Canvas pages may not be readable from a URL alone, so attach a screenshot or downloaded file when needed.
+
 The current public build is unsigned, so Windows SmartScreen may show an unknown-publisher warning. Verify the SHA-256 value on the Release page when needed.
 
 ## Your first conversation

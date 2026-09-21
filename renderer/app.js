@@ -27,6 +27,7 @@ let fullscreenPetPosition = null;
 let liveTaskHideTimer = null;
 let lastPointer = { x: 0, y: 0 };
 const activitySurface = { state: 'closed', epoch: 0, timer: null, animation: null };
+const composerSurface = { epoch: 0, timer: null, animation: null };
 const pets = new Map();
 const panelTabs = new Map();
 const temporarySummons = new Set();
@@ -112,6 +113,12 @@ const SHORTCUT_OPTIONS = [
   ['Control+Shift+P', 'Ctrl + Shift + P'],
   ['Alt+Shift+P', 'Alt + Shift + P'],
 ];
+const CAPTURE_SHORTCUT_OPTIONS = [
+  ['Control+Alt+S', 'Ctrl + Alt + S'],
+  ['Super+Alt+S', 'Win + Alt + S'],
+  ['Control+Shift+S', 'Ctrl + Shift + S'],
+  ['Alt+Shift+S', 'Alt + Shift + S'],
+];
 
 function selectOptions(items, selected) {
   return items.map(item => '<option value="' + esc(item[0]) + '"' + (String(item[0]) === String(selected) ? ' selected' : '') + '>' + esc(item[1]) + '</option>').join('');
@@ -132,7 +139,7 @@ function releaseHtml() {
     : (!update.ok ? ('检查失败 · ' + (update.error || '未知错误'))
       : (update.updateAvailable ? ('发现 v' + update.latestVersion) : '已是最新版本'));
   const signatureText = signature.signed ? '代码签名有效' : (signature.status === 'development' ? '开发模式' : '未检测到有效签名');
-  return '<section class="release-card"><div class="release-head"><span><b>版本与可靠性</b><small>v' + esc(release.currentVersion || '0.13.0') + '</small></span><i class="' + (signature.signed ? 'valid' : '') + '">' + esc(signatureText) + '</i></div>' +
+  return '<section class="release-card"><div class="release-head"><span><b>版本与可靠性</b><small>v' + esc(release.currentVersion || '0.13.3') + '</small></span><i class="' + (signature.signed ? 'valid' : '') + '">' + esc(signatureText) + '</i></div>' +
     '<div class="release-status"><span>' + esc(updateText) + '</span><span>本地崩溃记录 ' + Number(crashes.count || 0) + ' 条</span></div>' +
     '<div class="button-row"><button class="btn" id="p-check-update">检查更新</button>' + (update && update.ok && update.updateAvailable ? '<button class="btn primary" id="p-open-release">查看新版</button>' : '') + '<button class="btn" id="p-open-crashes">打开崩溃记录</button></div></section>';
 }
@@ -148,8 +155,13 @@ function appearanceScale() {
 
 function applyAppearanceSettings() {
   const settings = S.settings || {};
+  const themeMode = ['warm', 'dark', 'system'].includes(settings.themeMode) ? settings.themeMode : 'warm';
   document.body.classList.toggle('compact-mode', !!settings.compactMode);
   document.body.classList.toggle('reduce-motion', !!settings.reducedMotion);
+  document.body.classList.toggle('theme-dark', themeMode === 'dark');
+  document.body.classList.toggle('theme-system', themeMode === 'system');
+  document.body.dataset.theme = themeMode;
+  document.documentElement.style.colorScheme = themeMode === 'dark' ? 'dark' : (themeMode === 'system' ? 'light dark' : 'light');
   document.body.classList.toggle('font-rounded', settings.fontFamily === 'rounded');
   document.body.classList.toggle('font-readable', settings.fontFamily === 'readable');
   document.documentElement.style.setProperty('--pet-scale', appearanceScale().toFixed(3));
@@ -255,7 +267,8 @@ function createPet(pet) {
   element.className = 'pet ui ' + (pet.role === 'supervisor' ? 'boss' : 'worker') + (hidden ? ' hidden-pet' : '');
   element.id = 'pet-' + pet.id;
   element.tabIndex = 0;
-  element.setAttribute('role', 'button');
+  element.setAttribute('role', 'group');
+  element.setAttribute('aria-roledescription', '桌宠');
   element.setAttribute('aria-label', pet.name + '，' + (pet.role === 'supervisor' ? '主管 Agent' : '工作者 Agent'));
   const activityButton = pet.role === 'supervisor'
     ? '<span class="quick-sep"></span><button class="quick-btn activity-btn" data-activity aria-label="任务动态" title="任务动态"><span class="bell-icon" aria-hidden="true"></span><i class="activity-badge hidden">0</i></button>'
@@ -459,11 +472,37 @@ function bindEvents() {
   });
   window.petOffice.on('quota:update', quotas => {
     S.quotas = quotas;
-    if (openPanelFor) openPanel(openPanelFor);
+    if (openPanelFor && panelTabs.get(openPanelFor) === 'overview') refreshOpenPanelForLiveState();
   });
   window.petOffice.on('files:progress', progress => {
     if (!progress || progress.phase !== 'copied' || !composerPetId) return;
     bubble(composerPetId, '已复制 ' + progress.index + '/' + progress.total + ' · ' + short(progress.name, 36), 2200, 'detail');
+  });
+  window.petOffice.on('capture:status', payload => {
+    if (!payload || payload.phase === 'starting') return;
+    const target = pets.get(payload.petId) || pets.get('supervisor');
+    bubble(target.id, payload.message || '截图未完成', 6500, payload.phase === 'failed' ? 'attention' : 'detail');
+    announce(payload.message || '截图未完成');
+  });
+  window.petOffice.on('capture:ready', payload => {
+    if (!payload || !payload.file) return;
+    const target = pets.get(payload.petId) || pets.get('supervisor');
+    if (payload.project) {
+      S.projects = [...(S.projects || []).filter(item => item.id !== payload.project.id), payload.project];
+      S.activeProjectId = payload.project.id;
+    }
+    const alreadyOpen = composerPetId === target.id && !$('#composer').classList.contains('hidden');
+    if (!alreadyOpen) openComposer(target.id, false);
+    const key = payload.file.path || payload.file.relPath || payload.file.name;
+    if (!composerAttachments.some(item => (item.path || item.relPath || item.name) === key)) composerAttachments.push(payload.file);
+    renderComposerFiles();
+    const input = $('#c-text');
+    if (input) {
+      input.placeholder = '关于这张截图，你想问什么？';
+      input.focus({ preventScroll: true });
+    }
+    bubble(target.id, '截图已附加，输入问题后发送', 6500, 'detail');
+    announce('截图已附加，等待输入问题');
   });
   window.petOffice.on('pet:message', data => bubble('supervisor', data.text, 12000));
   window.petOffice.on('desktop:display', payload => {
@@ -512,7 +551,8 @@ function dropTargetPet(event) {
 function bindFileDrop() {
   document.addEventListener('dragover', event => {
     const types = event.dataTransfer && event.dataTransfer.types;
-    if (!types || !Array.from(types).includes('Files')) return;
+    const accepted = ['Files', 'text/uri-list', 'text/plain', 'text/html'];
+    if (!types || !Array.from(types).some(type => accepted.includes(type))) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     window.petOffice.setMouseIgnore(false);
@@ -525,19 +565,29 @@ function bindFileDrop() {
   });
   document.addEventListener('drop', async event => {
     const dataTransfer = event.dataTransfer;
-    if (!dataTransfer || !dataTransfer.files || !dataTransfer.files.length) return;
+    if (!dataTransfer) return;
+    // Prevent browser navigation synchronously; doing this after an IPC await is too late.
     event.preventDefault();
     clearDropTargets();
     const target = dropTargetPet(event) || pets.get('supervisor');
     if (!target) return;
-    const files = Array.from(dataTransfer.files);
-    const paths = files.map(file => window.petOffice.pathForFile(file)).filter(Boolean);
-    if (!paths.length) {
-      bubble(target.id, '未能读取拖入文件的路径，请重试', 7000);
-      return;
+    const files = Array.from(dataTransfer.files || []);
+    const rawLinks = {
+      uriList: dataTransfer.getData('text/uri-list') || '',
+      plain: dataTransfer.getData('text/plain') || '',
+      html: dataTransfer.getData('text/html') || '',
+    };
+    const links = await window.petOffice.normalizeLinks(rawLinks);
+    if (!files.length && !links.length) return;
+    if (files.length) {
+      const paths = files.map(file => window.petOffice.pathForFile(file)).filter(Boolean);
+      if (!paths.length) bubble(target.id, '未能读取拖入文件的路径，请重试', 7000);
+      else {
+        bubble(target.id, '正在接收 ' + paths.length + ' 个文件…', 4000);
+        await receiveDroppedPaths(target.id, paths);
+      }
     }
-    bubble(target.id, '正在接收 ' + paths.length + ' 个文件…', 4000);
-    await receiveDroppedPaths(target.id, paths);
+    if (links.length) await receiveDroppedLinks(target.id, links);
   });
 }
 
@@ -661,7 +711,21 @@ function applyTaskSnapshot(payload) {
   updateActivityBadge();
   updateLiveTaskCard();
   if (activitySurface.state !== 'closed') refreshActivityContents();
-  if (openPanelFor) openPanel(openPanelFor, panelTabs.get(openPanelFor));
+  refreshOpenPanelForLiveState();
+}
+
+function refreshOpenPanelForLiveState() {
+  if (!openPanelFor) return;
+  const tab = panelTabs.get(openPanelFor) || 'overview';
+  if (!['overview', 'work'].includes(tab)) return;
+  const panel = $('#panel');
+  const focused = document.activeElement;
+  if (focused && panel.contains(focused) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName)) return;
+  const page = panel.querySelector('.panel-page');
+  const scrollTop = page ? page.scrollTop : 0;
+  openPanel(openPanelFor, tab);
+  const nextPage = panel.querySelector('.panel-page');
+  if (nextPage) nextPage.scrollTop = scrollTop;
 }
 
 async function refreshState() {
@@ -779,13 +843,20 @@ async function setPinnedLiveTask(key) {
 function updateLiveTaskCard(showCompletion = false) {
   const card = $('#live-task');
   if (!card) return;
-  if (activitySurface.state !== 'closed') {
+  const blockingOverlay = ['#composer', '#panel', '#ctxmenu'].some(selector => !$(selector).classList.contains('hidden'));
+  if (activitySurface.state !== 'closed' || blockingOverlay) {
     hideLiveTaskCard();
     return;
   }
   clearTimeout(liveTaskHideTimer);
   const pinned = pinnedLiveSelection();
-  const mission = pinned && pinned.type === 'mission' ? pinned.value : (!pinned ? activeMission() : null);
+  const latestMission = !pinned ? activeMission() : null;
+  const latestTask = !pinned ? activeTask() : null;
+  const missionAt = latestMission ? (latestMission.updatedAt || latestMission.createdAt || 0) : 0;
+  const taskAt = latestTask ? (latestTask.updatedAt || latestTask.startedAt || 0) : 0;
+  const mission = pinned && pinned.type === 'mission'
+    ? pinned.value
+    : (!pinned && latestMission && (!latestTask || missionAt >= taskAt) ? latestMission : null);
   if (mission) {
     const activeNodes = (mission.tasks || []).filter(task => ['ready', 'queued', 'running', 'succeeded', 'reviewing', 'retrying'].includes(task.status));
     const current = activeNodes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
@@ -805,7 +876,7 @@ function updateLiveTaskCard(showCompletion = false) {
     positionLiveTaskCard();
     return;
   }
-  let task = pinned && pinned.type === 'task' ? pinned.value : (!pinned ? activeTask() : null);
+  let task = pinned && pinned.type === 'task' ? pinned.value : (!pinned ? latestTask : null);
   if (!task && showCompletion) {
     task = [...tasks].filter(item => ['done', 'failed', 'cancelled'].includes(item.status)).slice(-1)[0] || null;
   }
@@ -1152,6 +1223,8 @@ function closeOverlays() {
 function closeComposer(immediate = false) {
   const composer = $('#composer');
   if (composer.classList.contains('hidden')) return;
+  composerSurface.epoch++;
+  cancelComposerMotion();
   const pet = composerPetId && pets.get(composerPetId);
   composerPetId = null;
   const wasPetComposer = composer.classList.contains('pet-composer');
@@ -1174,6 +1247,8 @@ function closeComposer(immediate = false) {
 
 function finishComposerClose() {
   const composer = $('#composer');
+  composerSurface.epoch++;
+  cancelComposerMotion();
   clearTimeout(composerCloseTimer);
   composer.getAnimations().forEach(animation => animation.cancel());
   composer.classList.add('hidden');
@@ -1268,14 +1343,15 @@ function projectManagementHtml(project) {
   const archivedHtml = archived.length ? '<details class="archived-projects" open><summary>已归档项目 · ' + archived.length + '</summary>' + archived.map(item => '<div><span><b>' + esc(item.name) + '</b><small>' + esc(item.path) + '</small></span><button class="btn compact" data-restore-project="' + esc(item.id) + '">恢复</button></div>').join('') + '</details>' : '';
   if (!project) return '<div class="empty-state project-empty">新建、添加或恢复项目后，可在这里管理会话与附件。</div>' + archivedHtml;
   const sessions = projectSessionCache.get(project.id) || [];
+  const sessionCount = projectSessionCache.has(project.id) ? sessions.length : (project.threadIds || []).length;
   const sessionRows = sessions.length ? sessions.slice(0, 12).map(session =>
     '<div class="session-row"><span class="status-dot ' + statusForTask(session.status) + '"></span><div><b>' + esc(short(session.title, 58)) + '</b><small>' + esc(session.petName) + ' · ' + esc(modelName(session.model)) + (session.current ? ' · 当前上下文' : '') + '</small></div><button class="text-btn" data-project-thread="' + esc(session.threadId) + '">打开</button></div>'
   ).join('') : '<div class="empty-state">暂无项目会话；发送第一条消息后会出现在这里。</div>';
   return '<section class="project-manager"><div class="section-title">项目管理</div>' +
-    '<div class="project-summary"><div><b>' + esc(project.name) + '</b><small>' + esc(project.path) + '</small></div><span>' + (project.threadIds || []).length + ' 个会话</span></div>' +
-    '<div class="button-row"><button class="btn" id="p-rename-project">重命名</button><button class="btn" id="p-archive-project">归档</button><button class="btn" id="p-clear-attachments">清理附件</button><button class="btn danger" id="p-remove-project">移除列表</button></div>' +
+    '<div class="project-summary"><div><b>' + esc(project.name) + '</b><small>' + esc(project.path) + '</small></div><span>' + sessionCount + ' 个会话</span></div>' +
+    '<div class="project-primary-actions"><button class="btn" id="p-rename-project">重命名项目</button><button class="btn" id="p-new-session">新建空白会话</button></div>' +
     '<div class="section-title">会话</div><div class="session-list">' + sessionRows + '</div>' +
-    '<div class="session-actions"><button class="btn" id="p-new-session">新建空白会话</button><button class="btn danger" id="p-reset-context">重置主管上下文</button></div>' +
+    '<details class="project-tools"><summary>项目操作</summary><div class="project-tools-grid"><button class="btn" id="p-archive-project">归档项目</button><button class="btn" id="p-clear-attachments">清理附件</button><button class="btn danger" id="p-reset-context">重置主管上下文</button><button class="btn danger" id="p-remove-project">移除列表</button></div><small>这些操作会改变项目状态或上下文，执行前会再次确认。</small></details>' +
     archivedHtml + '</section>';
 }
 
@@ -1378,7 +1454,7 @@ function missionCardHtml(mission) {
   else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">我已手动处理</button>';
   if (['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
   const key = 'mission:' + mission.id;
-  return '<details class="mission-card" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">打开主管任务</button>' : '') + actions + '</div></div></details>';
+  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">打开主管任务</button>' : '') + actions + '</div></div></details>';
 }
 
 function missionSectionHtml(items = missions) {
@@ -1390,15 +1466,23 @@ function progressStageLabel(stage) {
   return ({ thinking: '分析', command: '命令', file: '文件', tool: '工具', report: '回复', finishing: '汇总', waiting: '等待', warning: '提示' })[stage] || '动态';
 }
 
-function activitySectionHtml(title, items) {
+function activitySectionHtml(title, items, collapsed = false) {
   if (!items.length) return '';
-  return '<section class="activity-list"><div class="section-title">' + esc(title) + '<span>' + items.length + '</span></div>' + items.map(activityTaskHtml).join('') + '</section>';
+  const content = items.map(activityTaskHtml).join('');
+  if (collapsed) return '<details class="activity-list activity-archive"><summary><span>' + esc(title) + '</span><i>' + items.length + '</i><b>⌄</b></summary><div>' + content + '</div></details>';
+  return '<section class="activity-list"><div class="section-title">' + esc(title) + '<span>' + items.length + '</span></div>' + content + '</section>';
 }
 
 function refreshActivityContents() {
   const panel = $('#activity');
   const scroll = panel.querySelector('.activity-scroll');
   const previousScroll = scroll ? scroll.scrollTop : 0;
+  const answerDrafts = new Map([...panel.querySelectorAll('[data-answer]')].map(control => [control.dataset.answer, control.value]));
+  const openMissions = new Map([...panel.querySelectorAll('[data-mission-id]')].map(card => [card.dataset.missionId, card.open]));
+  const recentArchiveOpen = !!panel.querySelector('.activity-archive[open]');
+  const focusedAnswer = panel.contains(document.activeElement) && document.activeElement.dataset
+    ? document.activeElement.dataset.answer
+    : null;
   const filteredTasks = tasks.filter(matchesProjectFilter);
   const filteredMissions = missions.filter(matchesProjectFilter);
   const ordered = [...filteredTasks].sort((a, b) => activityPriority(a.status) - activityPriority(b.status) || (b.updatedAt || b.finishedAt || b.startedAt || 0) - (a.updatedAt || a.finishedAt || a.startedAt || 0));
@@ -1415,10 +1499,22 @@ function refreshActivityContents() {
     '<div class="activity-scroll">' + monitorBanner +
     missionSectionHtml(filteredMissions) +
     (interactions.length ? '<section class="interaction-list"><div class="section-title">需要你处理<span>' + interactions.length + '</span></div>' + interactions.map(interactionCardHtml).join('') + '</section>' : '') +
-    activitySectionHtml('等待处理', waiting) + activitySectionHtml('进行中', active) + activitySectionHtml('最近动态', recent) + empty + '</div>';
+    activitySectionHtml('等待处理', waiting) + activitySectionHtml('进行中', active) + activitySectionHtml('最近动态', recent, true) + empty + '</div>';
   bindActivity();
+  panel.querySelectorAll('[data-answer]').forEach(control => {
+    if (answerDrafts.has(control.dataset.answer)) control.value = answerDrafts.get(control.dataset.answer);
+  });
+  panel.querySelectorAll('[data-mission-id]').forEach(card => {
+    if (openMissions.has(card.dataset.missionId)) card.open = openMissions.get(card.dataset.missionId);
+  });
+  const recentArchive = panel.querySelector('.activity-archive');
+  if (recentArchive) recentArchive.open = recentArchiveOpen;
   const nextScroll = panel.querySelector('.activity-scroll');
   if (nextScroll) nextScroll.scrollTop = previousScroll;
+  if (focusedAnswer) {
+    const nextFocus = [...panel.querySelectorAll('[data-answer]')].find(control => control.dataset.answer === focusedAnswer);
+    if (nextFocus) nextFocus.focus({ preventScroll: true });
+  }
   if (activitySurface.state === 'open') applyActivityRect(activityTargetRect());
 }
 
@@ -1661,7 +1757,7 @@ function panelPage(pet, tab) {
       '<label class="field"><span>当前模型</span><select id="p-model">' + modelOptions(pet.model) + '</select></label>' +
       capabilityBadges(pet.model) +
       quotaBlock(pet.model) +
-      '<div class="button-row"><button class="btn primary" id="p-newtask">✎ 继续对话</button><button class="btn" id="p-fresh-chat">新会话</button><button class="btn" id="p-reset-chat">重置上下文</button><button class="btn" id="p-activity">任务动态</button><button class="btn" id="p-opencodex">在 Codex 中打开</button></div>';
+      '<div class="overview-actions"><button class="btn primary overview-primary" id="p-newtask">✎ 继续对话</button><div class="overview-secondary"><button class="btn" id="p-fresh-chat">新会话</button><button class="btn" id="p-activity">任务动态</button></div><details class="utility-actions"><summary>更多操作</summary><div><button class="text-btn" id="p-opencodex">在 Codex 中打开</button><button class="text-btn danger-text" id="p-reset-chat">重置当前上下文</button></div></details></div>';
   }
   if (tab === 'work') {
     let content = '';
@@ -1691,6 +1787,7 @@ function panelPage(pet, tab) {
   return '<label class="field"><span>名称</span><div class="inline-field"><input id="p-name" type="text" value="' + esc(pet.name) + '"><button class="btn" id="p-rename">保存</button></div></label>' +
     (pet.role === 'supervisor' ?
       '<div class="settings-list"><label><span>开机自启<small>登录 Windows 后启动 Pet Office</small></span>' + switchHtml('s-autostart', S.settings.autostart) + '</label>' +
+      '<label class="field"><span>界面主题<small>任务中心始终保持深色，确保进度可读</small></span><select id="s-theme">' + selectOptions([['warm', '温暖办公室'], ['dark', '深色工作台'], ['system', '跟随系统']], S.settings.themeMode || 'warm') + '</select></label>' +
       '<label><span>迷你模式<small>缩小桌宠并隐藏常驻名称，悬停时恢复</small></span>' + switchHtml('s-compact', S.settings.compactMode) + '</label>' +
       '<label><span>减少动画<small>停用循环逐帧和位移动画，适合游戏或录屏</small></span>' + switchHtml('s-reduced-motion', S.settings.reducedMotion) + '</label>' +
       '<label class="field"><span>桌宠大小<small>迷你模式会在此基础上进一步缩小</small></span><select id="s-pet-scale">' + scaleOptions(S.settings.petScale) + '</select></label>' +
@@ -1701,6 +1798,7 @@ function panelPage(pet, tab) {
       '<label class="field"><span>界面字体</span><select id="s-font-family">' + selectOptions([['system', '系统默认'], ['rounded', '圆润'], ['readable', '高可读']], S.settings.fontFamily) + '</select></label>' +
       '<label><span>自动检查更新<small>仅查询 GitHub Release；下载与安装始终由你确认</small></span>' + switchHtml('s-auto-update', S.settings.autoCheckUpdates !== false) + '</label>' +
       '<label class="field"><span>显示 / 隐藏快捷键<small>' + esc(shortcutHint()) + '</small></span><select id="s-shortcut">' + shortcutOptions(S.settings.toggleShortcut) + '</select></label>' +
+      '<label class="field"><span>截图提问快捷键<small>' + esc(captureShortcutHint()) + '</small></span><select id="s-capture-shortcut">' + captureShortcutOptions(S.settings.captureShortcut) + '</select></label>' +
       '<label class="field"><span>最大并行 Agent</span><input id="s-mp" type="number" min="1" max="5" value="' + S.settings.maxParallel + '"></label></div>' +
       diagnosticsHtml() +
       releaseHtml() +
@@ -1829,6 +1927,18 @@ function shortcutHint() {
   return '当前：' + (SHORTCUT_OPTIONS.find(item => item[0] === (status.active || S.settings.toggleShortcut)) || ['', 'Ctrl + Alt + P'])[1] + '；退出固定为 Ctrl + Alt + Q';
 }
 
+function captureShortcutOptions(selected) {
+  return CAPTURE_SHORTCUT_OPTIONS.map(([value, label]) => '<option value="' + value + '"' + (value === selected ? ' selected' : '') + '>' + label + '</option>').join('');
+}
+
+function captureShortcutHint() {
+  const status = S.shortcutStatus || {};
+  if (!status.captureOk) return '截图快捷键注册失败；可尝试其他组合，或右键桌宠启动截图。';
+  if (status.captureFallback) return '所选组合被占用，当前暂用 Ctrl + Alt + S';
+  const found = CAPTURE_SHORTCUT_OPTIONS.find(item => item[0] === (status.captureActive || S.settings.captureShortcut));
+  return '当前：' + (found ? found[1] : 'Ctrl + Alt + S') + '；也可在输入框输入 /截图';
+}
+
 function positionPanel(panel, petElement) {
   const rect = petElement.getBoundingClientRect();
   const leftSide = rect.left - panel.offsetWidth - 16;
@@ -1948,6 +2058,8 @@ function bindPanel(petId) {
   if (compact) compact.onchange = () => saveSettings({ compactMode: compact.checked }, petId);
   const reducedMotion = panel.querySelector('#s-reduced-motion');
   if (reducedMotion) reducedMotion.onchange = () => saveSettings({ reducedMotion: reducedMotion.checked }, petId);
+  const theme = panel.querySelector('#s-theme');
+  if (theme) theme.onchange = () => saveSettings({ themeMode: theme.value }, petId);
   const petScale = panel.querySelector('#s-pet-scale');
   if (petScale) petScale.onchange = () => saveSettings({ petScale: Number(petScale.value) || 1 }, petId);
   const display = panel.querySelector('#s-display');
@@ -1964,6 +2076,8 @@ function bindPanel(petId) {
   if (autoUpdate) autoUpdate.onchange = () => saveSettings({ autoCheckUpdates: autoUpdate.checked }, petId);
   const shortcut = panel.querySelector('#s-shortcut');
   if (shortcut) shortcut.onchange = () => saveSettings({ toggleShortcut: shortcut.value }, petId);
+  const captureShortcut = panel.querySelector('#s-capture-shortcut');
+  if (captureShortcut) captureShortcut.onchange = () => saveSettings({ captureShortcut: captureShortcut.value }, petId);
   const maxParallel = panel.querySelector('#s-mp');
   if (maxParallel) maxParallel.onchange = () => saveSettings({ maxParallel: Math.max(1, Math.min(5, Number(maxParallel.value) || 5)) }, petId);
   const runDiagnostics = panel.querySelector('#p-diagnostics');
@@ -2219,6 +2333,7 @@ function openMenu(petId, x, y) {
   if (pet.role === 'supervisor') {
     items = [
       { label: '✎  继续当前对话', fn: () => openComposer('supervisor', false) },
+      { label: '▣  截图提问', fn: () => window.petOffice.startCapture('supervisor') },
       { label: '✎  新建单 Agent 对话', fn: () => startNewConversation('supervisor', false) },
       { label: '↺  重置主管上下文', fn: () => resetConversationContext('supervisor') },
       { label: '⌘  新建分工任务', fn: () => openComposer('supervisor', true) },
@@ -2238,6 +2353,7 @@ function openMenu(petId, x, y) {
   } else {
     items = [
       { label: '✎  继续当前对话', fn: () => openComposer(petId, false) },
+      { label: '▣  截图提问', fn: () => window.petOffice.startCapture(petId) },
       { label: '＋  新建会话', fn: () => startNewConversation(petId, false) },
       { label: '↺  重置上下文', fn: () => resetConversationContext(petId) },
       { label: '打开最近会话', fn: () => openLatestThread(petId) },
@@ -2278,8 +2394,18 @@ function quickButtonRect(pet) {
 function composerLayout(pet, mode, height) {
   const button = quickButtonRect(pet);
   const width = composerWidth(mode);
-  const left = Math.max(12, Math.min(innerWidth - width - 12, Math.round(button.left + button.width / 2 - width / 2)));
+  let left = Math.max(12, Math.min(innerWidth - width - 12, Math.round(button.left + button.width / 2 - width / 2)));
   const top = Math.max(8, Math.min(Math.round(button.top), innerHeight - height - 12));
+  // Near the bottom edge the expanded attachment stack has to move upward. In
+  // that fallback, place it beside the pet so screenshots and warnings do not
+  // cover the character itself.
+  if (pet && pet.el && top < button.top - 2) {
+    const petBox = pet.el.getBoundingClientRect();
+    const leftCandidate = Math.round(petBox.left - width - 14);
+    const rightCandidate = Math.round(petBox.right + 14);
+    if (leftCandidate >= 12) left = leftCandidate;
+    else if (rightCandidate + width <= innerWidth - 12) left = rightCandidate;
+  }
   return { button, left, top, width, height };
 }
 
@@ -2300,9 +2426,30 @@ function sameRect(a, b) {
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
 }
 
+function cancelComposerMotion() {
+  clearTimeout(composerSurface.timer);
+  composerSurface.timer = null;
+  if (composerSurface.animation) {
+    composerSurface.animation.onfinish = null;
+    try { composerSurface.animation.cancel(); } catch {}
+  }
+  composerSurface.animation = null;
+  const composer = $('#composer');
+  if (composer) composer.getAnimations().forEach(animation => {
+    animation.onfinish = null;
+    try { animation.cancel(); } catch {}
+  });
+}
+
 function animateComposerRect(from, to, duration = 230) {
   const composer = $('#composer');
-  composer.getAnimations().forEach(animation => animation.cancel());
+  const epoch = ++composerSurface.epoch;
+  cancelComposerMotion();
+  // A resize can interrupt the initial pill-to-composer animation. Always settle
+  // the visibility state first so cancelling an old animation never leaves every
+  // control transparent behind the `morphing` class.
+  composer.classList.remove('morphing');
+  composer.classList.add('ready');
   if (sameRect(from, to) || motionReduced()) {
     applyComposerRect(to);
     return;
@@ -2312,7 +2459,18 @@ function animateComposerRect(from, to, duration = 230) {
     { left: from.left + 'px', top: from.top + 'px', width: from.width + 'px', height: from.height + 'px' },
     { left: to.left + 'px', top: to.top + 'px', width: to.width + 'px', height: to.height + 'px' },
   ], { duration, easing: 'cubic-bezier(.22,.86,.24,1)', fill: 'both' });
-  animation.onfinish = () => { animation.cancel(); applyComposerRect(to); };
+  composerSurface.animation = animation;
+  const finish = () => {
+    if (epoch !== composerSurface.epoch) return;
+    animation.onfinish = null;
+    try { animation.cancel(); } catch {}
+    composerSurface.animation = null;
+    clearTimeout(composerSurface.timer);
+    composerSurface.timer = null;
+    applyComposerRect(to);
+  };
+  animation.onfinish = finish;
+  composerSurface.timer = setTimeout(finish, duration + 90);
 }
 
 function measureComposerHeight(width) {
@@ -2337,13 +2495,16 @@ function composerStackHtml(target, mode, draft) {
     ).join('') + '</div><input class="hidden" type="checkbox" id="c-planner" checked><div class="planner-row"><span>推荐只预选参与者；你仍需确认 Agent、模型与主管计划</span></div></section>' +
     '<div class="composer-project-line' + (mode ? '' : ' hidden') + '" id="c-project-line"><span>共享工作区</span><button class="project-trigger" id="c-project-trigger">' + esc(project ? project.name : '选择或新建项目') + '⌄</button><span class="workspace-note">结果与记忆由所选 Agent 共享</span></div>' +
     '<div class="composer-files hidden" id="c-files"></div>' +
-    '<div class="composer-input-row"><button class="round-btn' + (!mode && project ? ' hidden' : '') + '" id="c-project-button" title="选择项目">＋</button><textarea id="c-text" rows="1" placeholder="发送给 ' + esc(target.name) + ' · ' + esc(modelName(target.model)) + '">' + esc(draft) + '</textarea>' +
+    '<div class="attachment-note hidden" id="c-attachment-note"></div>' +
+    '<div class="composer-input-row"><button class="round-btn' + (!mode && project ? ' hidden' : '') + '" id="c-project-button" title="选择项目">＋</button><textarea id="c-text" rows="1" placeholder="发送给 ' + esc(target.name) + ' · ' + esc(modelName(target.model)) + '；输入 /截图 可选区提问">' + esc(draft) + '</textarea>' +
     '<label class="delegate-switch" title="分工模式"><span>分工</span>' + switchHtml('c-delegation', mode) + '</label><button class="send-btn" id="c-send" title="发送">↑</button><button class="inline-close" id="c-close" title="收起">×</button></div></div>' +
     '<div class="project-popover hidden" id="c-project-popover">' + projectPickerHtml() + '</div>';
 }
 
 function openComposer(targetPetId = 'supervisor', requestedDelegation = delegationOn, draft = '') {
   const composer = $('#composer');
+  const motionEpoch = ++composerSurface.epoch;
+  cancelComposerMotion();
   clearTimeout(composerCloseTimer);
   $('#panel').classList.add('hidden');
   closeActivity(true);
@@ -2360,7 +2521,6 @@ function openComposer(targetPetId = 'supervisor', requestedDelegation = delegati
   petMapValues().forEach(pet => { if (pet.id !== target.id) pet.el.classList.remove('composer-open'); });
   composerPetId = target.id;
   target.el.classList.add('composer-open');
-  composer.getAnimations().forEach(animation => animation.cancel());
   composer.className = 'ui pet-composer' + (reusable ? '' : ' morphing');
   composer.setAttribute?.('role', 'dialog');
   composer.setAttribute?.('aria-label', mode ? '分工任务输入' : '对话输入');
@@ -2393,13 +2553,21 @@ function openComposer(targetPetId = 'supervisor', requestedDelegation = delegati
       { left: button.left + 'px', top: button.top + 'px', width: button.width + 'px', height: button.height + 'px', borderRadius: '9999px' },
       { left: layout.left + 'px', top: layout.top + 'px', width: layout.width + 'px', height: layout.height + 'px', borderRadius: '18px' },
     ], { duration: 250, easing: 'cubic-bezier(.22,.86,.24,1)', fill: 'both' });
-    grow.onfinish = () => {
-      grow.cancel();
+    composerSurface.animation = grow;
+    const finishGrow = () => {
+      if (motionEpoch !== composerSurface.epoch) return;
+      grow.onfinish = null;
+      try { grow.cancel(); } catch {}
+      composerSurface.animation = null;
+      clearTimeout(composerSurface.timer);
+      composerSurface.timer = null;
       composer.classList.remove('morphing');
       composer.classList.add('ready');
       applyComposerRect(layout);
       if (mode) revealDelegation(target, mode);
     };
+    grow.onfinish = finishGrow;
+    composerSurface.timer = setTimeout(finishGrow, 340);
   }
   bindComposer(target.id, mode);
   composer.querySelector('#c-text').focus({ preventScroll: true });
@@ -2416,6 +2584,11 @@ function revealDelegation(target, mode) {
 function resizeComposer(pet, mode, animate = true) {
   const composer = $('#composer');
   if (!composer.classList.contains('pet-composer')) return;
+  // Resizing can be the event that interrupts the initial open animation (for
+  // example when automatic Agent recommendation returns immediately). Make the
+  // requested mode authoritative instead of relying on the cancelled opener to
+  // reveal these sections later.
+  composer.querySelectorAll('#c-delegation-options, #c-project-line').forEach(element => element.classList.toggle('hidden', !mode));
   if (!animate) {
     composer.getAnimations().forEach(animation => animation.cancel());
     composer.classList.remove('morphing');
@@ -2465,18 +2638,26 @@ function bindComposer(targetPetId, initialMode) {
   composer.querySelector('#c-open-codex').onclick = () => openLatestThread(null);
   const recommend = composer.querySelector('#c-recommend');
   if (recommend) recommend.onclick = () => applyAgentRecommendation();
+  composer.querySelectorAll('[data-pet]').forEach(input => { input.onchange = () => renderComposerFiles(); });
   composer.querySelectorAll('[data-model]').forEach(select => {
     select.onchange = () => {
       const holder = composer.querySelector('[data-agent-capabilities="' + select.dataset.model + '"]');
       if (holder) holder.innerHTML = capabilityBadges(select.value || null, true);
       const chip = select.closest('.agent-choice').querySelector('.agent-chip small');
       if (chip) chip.textContent = modelName(select.value || null);
+      renderComposerFiles();
     };
   });
   composer.querySelector('#c-send').onclick = () => submitComposer(targetPetId, mode);
   composer.querySelector('#c-text').onkeydown = event => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
+      const command = composer.querySelector('#c-text').value.trim().toLowerCase();
+      if (command === '/截图' || command === '/shot' || command === '/screenshot') {
+        composer.querySelector('#c-text').value = '';
+        window.petOffice.startCapture(targetPetId);
+        return;
+      }
       submitComposer(targetPetId, mode);
     }
   };
@@ -2518,9 +2699,32 @@ function humanSize(bytes) {
   return value + 'B';
 }
 
+function composerVisionWarning() {
+  if (!composerAttachments.some(item => item.source === 'capture' || item.kind === '图片')) return '';
+  const composer = $('#composer');
+  const unsupported = [];
+  const delegation = composer && composer.querySelector('#c-delegation');
+  if (delegation && delegation.checked) {
+    composer.querySelectorAll('[data-pet]:checked').forEach(input => {
+      const select = composer.querySelector('[data-model="' + input.dataset.pet + '"]');
+      const slug = select && select.value || null;
+      const record = modelRecord(slug);
+      if (providerOf(slug) !== 'openai' && !(record && record.capabilities && record.capabilities.vision)) {
+        unsupported.push((pets.get(input.dataset.pet) || {}).name || input.dataset.pet);
+      }
+    });
+  } else {
+    const pet = pets.get(composerPetId) || pets.get('supervisor');
+    const record = modelRecord(pet && pet.model);
+    if (pet && providerOf(pet.model) !== 'openai' && !(record && record.capabilities && record.capabilities.vision)) unsupported.push(pet.name);
+  }
+  return unsupported.length ? ('⚠ ' + unsupported.join('、') + ' 的当前模型未标注视觉能力，建议先切换视觉模型。') : '';
+}
+
 function renderComposerFiles() {
   const box = $('#c-files');
   if (!box) return;
+  const note = $('#c-attachment-note');
   const wasHidden = box.classList.contains('hidden');
   const resizeForAttachments = () => requestAnimationFrame(() => {
     const target = composerPetId && pets.get(composerPetId);
@@ -2530,28 +2734,91 @@ function renderComposerFiles() {
   if (!composerAttachments.length) {
     box.classList.add('hidden');
     box.innerHTML = '';
+    if (note) { note.classList.add('hidden'); note.innerHTML = ''; }
     if (!wasHidden) resizeForAttachments();
     return;
   }
   box.classList.remove('hidden');
   box.setAttribute('role', 'list');
   box.setAttribute('aria-label', '待发送附件');
-  box.innerHTML = composerAttachments.map((file, index) =>
-    '<article class="file-chip attachment-card" role="listitem" title="' + esc(file.relPath || file.name) + '"><i class="attachment-icon">' + esc(String(file.kind || '文件').slice(0, 1)) + '</i><span><b>' + esc(file.name) + '</b><small>' + esc(file.kind || '文件') + ' · ' + esc(humanSize(file.size)) + '</small></span><button type="button" data-file-remove="' + index + '" aria-label="移除 ' + esc(file.name) + '">×</button></article>'
-  ).join('');
+  box.innerHTML = composerAttachments.map((file, index) => {
+    const isLink = file.type === 'link';
+    const isCapture = file.source === 'capture';
+    const icon = isLink
+      ? '<button type="button" class="attachment-icon open-attachment" data-link-open="' + index + '" aria-label="在浏览器打开 ' + esc(file.name) + '">↗</button>'
+      : (isCapture && file.previewDataUrl
+        ? '<span class="attachment-icon attachment-preview"><img src="' + esc(file.previewDataUrl) + '" alt=""></span>'
+        : '<span class="attachment-icon">' + esc(String(file.kind || '文件').slice(0, 1)) + '</span>');
+    const meta = isLink ? (file.domain || '网页链接') : ((file.kind || '文件') + ' · ' + humanSize(file.size));
+    return '<article class="file-chip attachment-card' + (isLink ? ' link' : '') + (isCapture ? ' screenshot' : '') + '" role="listitem" title="' + esc(file.url || file.relPath || file.name) + '">' + icon + '<span><b>' + esc(file.name) + '</b><small>' + esc(meta) + '</small></span><button class="attachment-remove" type="button" data-file-remove="' + index + '" aria-label="移除 ' + esc(file.name) + '">×</button></article>';
+  }).join('');
+  box.querySelectorAll('[data-link-open]').forEach(button => {
+    button.onclick = () => window.petOffice.openExternal(composerAttachments[Number(button.dataset.linkOpen)].url);
+  });
   box.querySelectorAll('[data-file-remove]').forEach(button => {
     button.onclick = () => {
       composerAttachments.splice(Number(button.dataset.fileRemove), 1);
       renderComposerFiles();
     };
   });
+  if (note) {
+    const hasCapture = composerAttachments.some(item => item.source === 'capture');
+    const hasLink = composerAttachments.some(item => item.type === 'link');
+    const warning = composerVisionWarning();
+    note.classList.toggle('hidden', !hasCapture && !hasLink && !warning);
+    note.innerHTML = (hasCapture ? '<div class="quick-prompts"><span>快速提问</span>' + ['解释这部分', '总结重点', '检查错误', '下一步怎么做'].map(text => '<button type="button" data-quick-prompt="' + esc(text) + '">' + esc(text) + '</button>').join('') + '</div>' : '') + (hasLink ? '<div class="link-hint">需要登录的 Canvas 页面可能无法由模型直接读取；遇到权限页时请同时附截图或下载后的文件。</div>' : '') + (warning ? '<div class="vision-warning">' + esc(warning) + '</div>' : '');
+    note.querySelectorAll('[data-quick-prompt]').forEach(button => {
+      button.onclick = () => {
+        const input = $('#c-text');
+        input.value = button.dataset.quickPrompt;
+        input.focus({ preventScroll: true });
+      };
+    });
+  }
   resizeForAttachments();
 }
 
 function attachmentPromptBlock() {
   if (!composerAttachments.length) return '';
-  const lines = composerAttachments.map(file => '- ' + (file.relPath || file.name) + '（' + (file.kind || '文件') + '，' + humanSize(file.size) + '）');
-  return '\n\n附件已复制到项目工作区，可直接读取：\n' + lines.join('\n');
+  const lines = composerAttachments.map(file => file.type === 'link'
+    ? '- 网页链接：' + file.name + ' — ' + file.url
+    : '- ' + (file.relPath || file.name) + '（' + (file.kind || '文件') + '，' + humanSize(file.size) + '）');
+  return '\n\n附件与参考链接：\n' + lines.join('\n');
+}
+
+async function ensureQuickProject() {
+  if (currentProject()) return currentProject();
+  const name = '快速提问-' + new Date().toISOString().slice(0, 10);
+  let project = (S.projects || []).find(item => !item.archived && item.name === name);
+  if (project) await window.petOffice.selectProject(project.id);
+  else project = await window.petOffice.createProject(name);
+  if (project) {
+    S.projects = [...(S.projects || []).filter(item => item.id !== project.id), project];
+    S.activeProjectId = project.id;
+  }
+  return project;
+}
+
+async function receiveDroppedLinks(petId, links) {
+  const target = pets.get(petId) || pets.get('supervisor');
+  if (!target || !Array.isArray(links) || !links.length) return null;
+  const project = await ensureQuickProject();
+  if (!project) {
+    bubble(target.id, '无法创建快速提问工作区', 7000, 'attention');
+    return null;
+  }
+  const alreadyOpen = composerPetId === target.id && !$('#composer').classList.contains('hidden');
+  if (!alreadyOpen) openComposer(target.id, false);
+  const known = new Set(composerAttachments.filter(item => item.type === 'link').map(item => item.url));
+  for (const link of links) if (!known.has(link.url)) { composerAttachments.push(link); known.add(link.url); }
+  renderComposerFiles();
+  const input = $('#c-text');
+  if (input) {
+    input.placeholder = '针对这些网页链接，你想问什么？';
+    input.focus({ preventScroll: true });
+  }
+  bubble(target.id, '已接收 ' + links.length + ' 个网页链接', 6500, 'detail');
+  return { links, project };
 }
 
 async function receiveDroppedPaths(petId, paths) {

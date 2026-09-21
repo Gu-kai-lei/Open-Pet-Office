@@ -1,7 +1,8 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, dialog, shell, globalShortcut, Tray, Menu, nativeImage, Notification, crashReporter } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, dialog, shell, globalShortcut, Tray, Menu, nativeImage, Notification, crashReporter, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const cfg = require('./config');
 const catalog = require('./catalog');
@@ -18,6 +19,7 @@ const { hydrateProject, clearProjectInbox } = require('./project-service');
 const { recommendAgents } = require('./recommender');
 const releaseManager = require('./release-manager');
 const { isFullscreenBounds, probeForegroundWindow } = require('./fullscreen-probe');
+const { normalizeDroppedLinks } = require('./link-utils');
 
 cfg.ensureDirs();
 try {
@@ -49,7 +51,11 @@ const pendingInteractions = new Map();
 let appServerIdleTimer = null;
 let desktopMonitorHealth = { ok: true, error: null, lastScanAt: 0 };
 const TOGGLE_SHORTCUTS = new Set(['Control+Alt+P', 'Super+Alt+P', 'Control+Shift+P', 'Alt+Shift+P']);
-let shortcutStatus = { ok: true, active: state.settings.toggleShortcut || 'Control+Alt+P', fallback: false };
+const CAPTURE_SHORTCUTS = new Set(['Control+Alt+S', 'Super+Alt+S', 'Control+Shift+S', 'Alt+Shift+S']);
+let shortcutStatus = { ok: true, active: state.settings.toggleShortcut || 'Control+Alt+P', fallback: false, captureOk: true, captureActive: state.settings.captureShortcut || 'Control+Alt+S' };
+let captureInFlight = false;
+let captureEpoch = 0;
+let cancelCaptureWait = null;
 let activeDisplayId = null;
 let fullscreenActive = false;
 let fullscreenTimer = null;
@@ -1044,6 +1050,10 @@ function normalizedToggleShortcut(value) {
   return TOGGLE_SHORTCUTS.has(value) ? value : 'Control+Alt+P';
 }
 
+function normalizedCaptureShortcut(value) {
+  return CAPTURE_SHORTCUTS.has(value) ? value : 'Control+Alt+S';
+}
+
 function registerGlobalShortcuts() {
   try { globalShortcut.unregisterAll(); } catch {}
   const requested = normalizedToggleShortcut(state.settings.toggleShortcut);
@@ -1055,10 +1065,22 @@ function registerGlobalShortcuts() {
     active = 'Control+Alt+P';
     try { ok = globalShortcut.register(active, () => setWindowVisible(!win.isVisible())); } catch {}
   }
+  const captureRequested = normalizedCaptureShortcut(state.settings.captureShortcut);
+  state.settings.captureShortcut = captureRequested;
+  let captureActive = captureRequested;
+  let captureOk = false;
+  try { captureOk = globalShortcut.register(captureRequested, () => startScreenCapture('supervisor')); } catch {}
+  if (!captureOk && captureRequested !== 'Control+Alt+S') {
+    captureActive = 'Control+Alt+S';
+    try { captureOk = globalShortcut.register(captureActive, () => startScreenCapture('supervisor')); } catch {}
+  }
   try {
     globalShortcut.register('Control+Alt+Q', () => { isQuitting = true; app.quit(); });
   } catch {}
-  shortcutStatus = { ok, requested, active: ok ? active : null, fallback: ok && active !== requested };
+  shortcutStatus = {
+    ok, requested, active: ok ? active : null, fallback: ok && active !== requested,
+    captureOk, captureRequested, captureActive: captureOk ? captureActive : null, captureFallback: captureOk && captureActive !== captureRequested,
+  };
   cfg.log('shortcut registration: ' + JSON.stringify(shortcutStatus));
   return shortcutStatus;
 }
@@ -1079,6 +1101,113 @@ function setWindowVisible(show) {
   } else {
     win.hide();
     send('pet:window-visible', false);
+  }
+}
+
+function captureFingerprint(image) {
+  if (!image || image.isEmpty()) return null;
+  try { return crypto.createHash('sha256').update(image.toPNG()).digest('hex'); } catch { return null; }
+}
+
+function saveCapturedImage(image) {
+  let project = activeProject();
+  if (!project) project = createProjectDir('快速提问-' + new Date().toISOString().slice(0, 10));
+  const dir = path.join(project.path, 'inbox', 'screenshots');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let target = path.join(dir, 'screenshot-' + stamp + '.png');
+  let suffix = 1;
+  while (fs.existsSync(target)) target = path.join(dir, 'screenshot-' + stamp + '-' + suffix++ + '.png');
+  const png = image.toPNG();
+  fs.writeFileSync(target, png);
+  const size = image.getSize();
+  const previewWidth = Math.min(360, Math.max(1, size.width));
+  const preview = size.width > previewWidth ? image.resize({ width: previewWidth, quality: 'good' }) : image;
+  project.updatedAt = Date.now();
+  cfg.saveState(state);
+  return {
+    project: { id: project.id, name: project.name, path: project.path },
+    file: {
+      type: 'file', source: 'capture', name: path.basename(target), path: target,
+      relPath: path.relative(project.path, target).split(path.sep).join('/'), kind: '图片', size: png.length,
+      width: size.width, height: size.height, previewDataUrl: preview.toDataURL(),
+    },
+  };
+}
+
+async function startScreenCapture(petId = 'supervisor') {
+  if (captureInFlight) {
+    // Windows does not report an Esc cancellation through ms-screenclip. A new
+    // request therefore supersedes the stale waiter instead of locking capture
+    // for the full timeout.
+    if (cancelCaptureWait) cancelCaptureWait('superseded');
+    send('capture:status', { phase: 'restarting', petId, message: '已结束上一次截图等待，正在重新启动。' });
+  }
+  const captureId = ++captureEpoch;
+  captureInFlight = true;
+  const wasVisible = !!(win && win.isVisible());
+  const baseline = captureFingerprint(clipboard.readImage());
+  send('capture:status', { phase: 'starting', petId, message: '请选择要截取的区域；按 Esc 可取消。' });
+  if (win && !win.isDestroyed()) win.hide();
+  await new Promise(resolve => setTimeout(resolve, 180));
+  try {
+    await shell.openExternal('ms-screenclip:');
+  } catch (error) {
+    if (captureId !== captureEpoch) return { ok: false, cancelled: true, superseded: true };
+    if (captureId === captureEpoch) {
+      captureInFlight = false;
+      cancelCaptureWait = null;
+    }
+    if (wasVisible) setWindowVisible(true);
+    send('capture:status', { phase: 'failed', petId, message: '无法启动 Windows 截图：' + error.message });
+    return { ok: false, error: error.message };
+  }
+  if (captureId !== captureEpoch) return { ok: false, cancelled: true, superseded: true };
+  // Windows freezes the desktop image before the selection UI appears. Restore the
+  // pet shortly afterwards so cancelling with Esc never leaves the app hidden.
+  if (wasVisible) setTimeout(() => {
+    if (captureInFlight && win && !win.isDestroyed() && !win.isVisible()) setWindowVisible(true);
+  }, 1100);
+  const startedAt = Date.now();
+  const result = await new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      if (captureId === captureEpoch) cancelCaptureWait = null;
+      resolve(value);
+    };
+    const timer = setInterval(() => {
+      const image = clipboard.readImage();
+      const fingerprint = captureFingerprint(image);
+      if (fingerprint && fingerprint !== baseline) {
+        finish({ image });
+      } else if (Date.now() - startedAt > 30000) {
+        finish(null);
+      }
+    }, 350);
+    cancelCaptureWait = reason => finish({ cancelled: true, reason });
+  });
+  if (captureId !== captureEpoch || (result && result.reason === 'superseded')) {
+    return { ok: false, cancelled: true, superseded: true };
+  }
+  captureInFlight = false;
+  cancelCaptureWait = null;
+  if (!result) {
+    if (wasVisible) setWindowVisible(true);
+    send('capture:status', { phase: 'cancelled', petId, message: '截图已取消或超时。' });
+    return { ok: false, cancelled: true };
+  }
+  try {
+    const saved = saveCapturedImage(result.image);
+    setWindowVisible(true);
+    send('capture:ready', { petId, ...saved });
+    return { ok: true, ...saved };
+  } catch (error) {
+    if (wasVisible) setWindowVisible(true);
+    send('capture:status', { phase: 'failed', petId, message: '截图保存失败：' + error.message });
+    return { ok: false, error: error.message };
   }
 }
 
@@ -1154,7 +1283,9 @@ function createWindow() {
             : captureView === 'status-cancelled'
               ? "(() => { const now = Date.now(); tasks = [{ id: 'd-old', petId: 'supervisor', source: 'desktop', surface: 'Codex 桌面端', brief: '旧完成任务', status: 'done', updatedAt: now - 60000, startedAt: now - 60000 }, { id: 'c-new', petId: 'supervisor', source: 'desktop', surface: 'Codex 桌面端', brief: '被中断的任务', status: 'cancelled', updatedAt: now - 400, startedAt: now - 6000 }]; previousTaskStatuses.set('c-new', 'running'); syncPetTaskStatus(); const boss = pets.get('supervisor'); const sig = boss.el.querySelector('.state-signal'); return { petStatus: boss.status, dataStatus: boss.el.dataset.status || null, signalDisplay: getComputedStyle(sig).display, signalContent: getComputedStyle(sig, '::before').content, dotColor: getComputedStyle(boss.el.querySelector('.tag .dot')).backgroundColor }; })()"
             : captureView === 'drop-files'
-              ? "(async () => { const probe = await window.petOffice.ingestFiles(['C:/definitely-missing/probe.txt']); openComposer('supervisor', false); composerAttachments = [{ name: '季度报告.pdf', relPath: 'inbox/季度报告.pdf', kind: 'PDF', size: 20480 }, { name: 'photo.png', relPath: 'inbox/photo.png', kind: '图片', size: 102400 }]; renderComposerFiles(); const chips = [...document.querySelectorAll('#c-files .file-chip')]; return { ipcWired: !!(probe && probe.ok === false && probe.error), ipcError: probe ? probe.error : null, composerOpen: !document.getElementById('composer').classList.contains('hidden'), composerPet: composerPetId, chips: chips.length, chipNames: chips.map(node => node.querySelector('b').textContent), chipKinds: chips.map(node => node.querySelector('i').textContent), promptBlock: attachmentPromptBlock() }; })()"
+              ? "(async () => { const probe = await window.petOffice.ingestFiles(['C:/definitely-missing/probe.txt']); openComposer('supervisor', false); composerAttachments = [{ name: '季度报告.pdf', relPath: 'inbox/季度报告.pdf', kind: 'PDF', size: 20480 }, { name: 'photo.png', relPath: 'inbox/photo.png', kind: '图片', size: 102400 }]; renderComposerFiles(); const chips = [...document.querySelectorAll('#c-files .file-chip')]; return { ipcWired: !!(probe && probe.ok === false && probe.error), ipcError: probe ? probe.error : null, composerOpen: !document.getElementById('composer').classList.contains('hidden'), composerPet: composerPetId, chips: chips.length, chipNames: chips.map(node => node.querySelector('b').textContent), chipKinds: chips.map(node => node.querySelector('.attachment-icon').textContent), promptBlock: attachmentPromptBlock() }; })()"
+            : captureView === 'quick-input-v0131'
+              ? "(() => { const pet = pets.get('supervisor'); pet.model = 'deepseek/test-no-vision'; S.models = [...(S.models || []), { slug: pet.model, name: 'DeepSeek Test', provider: 'deepseek', capabilities: { vision: false, speed: 'fast', cost: 'low' } }]; openComposer('supervisor', false); composerAttachments = [{ type: 'file', source: 'capture', name: 'canvas-assignment.png', relPath: 'inbox/screenshots/canvas-assignment.png', kind: '图片', size: 188420, previewDataUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22240%22%3E%3Crect width=%22400%22 height=%22240%22 fill=%22%231e293b%22/%3E%3Crect x=%2222%22 y=%2224%22 width=%22356%22 height=%2240%22 rx=%228%22 fill=%22%23f2a62b%22/%3E%3Crect x=%2222%22 y=%2280%22 width=%22270%22 height=%2212%22 rx=%226%22 fill=%22%2394a3b8%22/%3E%3Crect x=%2222%22 y=%22110%22 width=%22330%22 height=%2212%22 rx=%226%22 fill=%22%2364748b%22/%3E%3C/svg%3E' }, { type: 'link', url: 'https://canvas.example.edu/courses/42/assignments/9', name: 'Week 3 Assignment', domain: 'canvas.example.edu', kind: '链接', size: 0 }]; renderComposerFiles(); document.getElementById('c-text').value = '帮我解释这道作业要求，并列出完成步骤'; return { attachments: composerAttachments.length, quickPrompts: document.querySelectorAll('[data-quick-prompt]').length, warning: document.querySelector('.vision-warning')?.textContent || '', linkHint: document.querySelector('.link-hint')?.textContent || '' }; })()"
             : captureView === 'dismiss'
               ? "(() => { const stage = document.getElementById('stage'); openPanel('supervisor'); const panelOpened = !document.getElementById('panel').classList.contains('hidden'); stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 20 })); const panelClosed = document.getElementById('panel').classList.contains('hidden'); openMenu('supervisor', 300, 300); const menuOpened = !document.getElementById('ctxmenu').classList.contains('hidden'); stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 20 })); const menuClosed = document.getElementById('ctxmenu').classList.contains('hidden'); return { panelOpened, panelClosed, menuOpened, menuClosed }; })()"
             : captureView === 'composer'
@@ -1175,6 +1306,8 @@ function createWindow() {
               ? "(async () => { openComposer('supervisor', true, '请快速实现桌宠界面代码，并审查测试结果和截图'); await new Promise(r => setTimeout(r, 500)); await applyAgentRecommendation(); return { selected: [...document.querySelectorAll('[data-pet]:checked')].map(x => x.dataset.pet), note: document.getElementById('c-recommendation-note').innerText }; })()"
             : captureView === 'team'
               ? "openPanel('supervisor', 'team')"
+              : captureView === 'theme-dark'
+                ? "(() => { S.settings.themeMode = 'dark'; applyAppearanceSettings(); openPanel('supervisor', 'overview'); return { theme: document.body.dataset.theme, dark: document.body.classList.contains('theme-dark'), primaryActions: document.querySelectorAll('.overview-primary').length }; })()"
               : captureView === 'deepseek'
                 ? "(() => { const m = (S.models || []).find(x => x.provider === 'deepseek' || x.slug.startsWith('deepseek/')); if (m) pets.get('supervisor').model = m.slug; openPanel('supervisor'); })()"
               : "openPanel('supervisor')";
@@ -1399,6 +1532,7 @@ ipcMain.handle('agents:recommend', (e, payload = {}) => recommendAgents({
 }));
 ipcMain.handle('settings:set', (e, patch) => {
   const previousShortcut = state.settings.toggleShortcut;
+  const previousCaptureShortcut = state.settings.captureShortcut;
   const previousDisplay = state.settings.displayMode;
   const previousFullscreen = state.settings.fullscreenBehavior;
   Object.assign(state.settings, patch || {});
@@ -1414,7 +1548,8 @@ ipcMain.handle('settings:set', (e, patch) => {
   const allowedDisplays = new Set(['cursor', 'primary', ...displaySnapshot().map(display => display.id)]);
   state.settings.displayMode = allowedDisplays.has(String(state.settings.displayMode)) ? String(state.settings.displayMode) : 'cursor';
   state.settings.toggleShortcut = normalizedToggleShortcut(state.settings.toggleShortcut);
-  if (app.isReady() && state.settings.toggleShortcut !== previousShortcut) registerGlobalShortcuts();
+  state.settings.captureShortcut = normalizedCaptureShortcut(state.settings.captureShortcut);
+  if (app.isReady() && (state.settings.toggleShortcut !== previousShortcut || state.settings.captureShortcut !== previousCaptureShortcut)) registerGlobalShortcuts();
   if (app.isReady() && state.settings.displayMode !== previousDisplay) repositionWindow();
   if (app.isReady() && state.settings.fullscreenBehavior !== previousFullscreen) configureFullscreenMonitor();
   cfg.saveState(state);
@@ -1464,6 +1599,13 @@ ipcMain.handle('cap:set', (e, { petId, cap }) => {
   return true;
 });
 ipcMain.handle('shell:open', (e, p) => { try { return shell.openPath(p); } catch { return null; } });
+ipcMain.handle('shell:external', async (e, url) => {
+  const normalized = normalizeDroppedLinks({ plain: String(url || '') })[0];
+  if (!normalized) return false;
+  try { await shell.openExternal(normalized.url); return true; } catch { return false; }
+});
+ipcMain.handle('links:normalize', (e, payload = {}) => normalizeDroppedLinks(payload));
+ipcMain.handle('capture:start', (e, petId) => startScreenCapture(String(petId || 'supervisor')));
 ipcMain.handle('files:ingest', async (e, payload = {}) => {
   const paths = Array.isArray(payload.paths) ? payload.paths : [];
   let proj = payload.projectId ? state.projects.find(item => item.id === payload.projectId) : activeProject();

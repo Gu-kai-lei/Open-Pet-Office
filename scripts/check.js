@@ -23,6 +23,7 @@ const files = [
   'src/project-service.js',
   'src/release-manager.js',
   'src/fullscreen-probe.js',
+  'src/link-utils.js',
   'src/main.js',
   'src/preload.js',
   'renderer/app.js',
@@ -38,6 +39,9 @@ const files = [
   'scripts/mission-test.js',
   'scripts/v012-test.js',
   'scripts/v013-test.js',
+  'scripts/v0131-test.js',
+  'scripts/v0132-test.js',
+  'scripts/v0133-test.js',
 ];
 
 let failed = false;

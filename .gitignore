@@ -17,5 +17,7 @@ reg-*.png
 reg-*.state.json
 v0*-*.png
 v0*-*.state.json
+audit-ui/
+audit-ui-*/
 boba-inline-composer.png
 *.log

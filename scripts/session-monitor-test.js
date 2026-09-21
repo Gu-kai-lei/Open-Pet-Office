@@ -7,10 +7,12 @@ const path = require('node:path');
 const { CodexSessionMonitor, _internals } = require('../src/session-monitor');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-office-session-monitor-'));
-const day = path.join(root, '2026', '09', '19');
+const baseTime = Date.now() - 60 * 1000;
+const baseDate = new Date(baseTime);
+const day = path.join(root, String(baseDate.getUTCFullYear()), String(baseDate.getUTCMonth() + 1).padStart(2, '0'), String(baseDate.getUTCDate()).padStart(2, '0'));
 fs.mkdirSync(day, { recursive: true });
 
-const iso = offset => new Date(1789813128000 + offset).toISOString();
+const iso = offset => new Date(baseTime + offset).toISOString();
 const meta = (id, overrides = {}) => ({
   timestamp: iso(0), type: 'session_meta', payload: {
     id, originator: 'Codex Desktop', source: 'vscode', thread_source: 'user',
@@ -26,7 +28,7 @@ const turnId = 'turn-1';
 const first = path.join(day, 'root-a.jsonl');
 writeLines(first, [
   meta(threadId),
-  event(1000, { type: 'task_started', turn_id: turnId, started_at: 1789813129 }),
+  event(1000, { type: 'task_started', turn_id: turnId, started_at: Math.floor((baseTime + 1000) / 1000) }),
   response(1200, {
     type: 'message', role: 'user',
     content: [{ type: 'input_text', text: 'PLEASE IMPLEMENT THIS PLAN:\n# 修复铃铛与实时任务' }],
@@ -41,7 +43,7 @@ writeLines(first, [
 const guardian = path.join(day, 'guardian.jsonl');
 writeLines(guardian, [
   meta('guardian', { source: { subagent: {} }, thread_source: 'guardian_review' }),
-  event(1000, { type: 'task_started', turn_id: 'review-turn', started_at: 1789813129 }),
+  event(1000, { type: 'task_started', turn_id: 'review-turn', started_at: Math.floor((baseTime + 1000) / 1000) }),
 ]);
 
 let changes = 0;
@@ -68,7 +70,7 @@ assert.equal(monitor.snapshot()[0].progress, '已更新文件 · src\\app.js');
 const continuation = path.join(day, 'root-b.jsonl');
 writeLines(continuation, [
   meta(threadId),
-  event(4000, { type: 'task_complete', turn_id: turnId, completed_at: 1789813132, last_agent_message: '完成，密钥 sk-1234567890abcdefghijkl 不应显示' }),
+  event(4000, { type: 'task_complete', turn_id: turnId, completed_at: Math.floor((baseTime + 4000) / 1000), last_agent_message: '完成，密钥 sk-1234567890abcdefghijkl 不应显示' }),
 ]);
 monitor.scan(false);
 tasks = monitor.snapshot();
@@ -94,7 +96,7 @@ assert.equal(_internals.isControlMessage('正常用户消息'), false);
 assert.doesNotMatch(_internals.redact('Authorization: Bearer abcdefghijklmnopqrstuvwxyz'), /abcdefghijklmnopqrstuvwxyz/);
 
 const turn2 = 'turn-2';
-fs.appendFileSync(first, JSON.stringify(event(5000, { type: 'task_started', turn_id: turn2, started_at: 1789813133 })) + '\n', 'utf8');
+fs.appendFileSync(first, JSON.stringify(event(5000, { type: 'task_started', turn_id: turn2, started_at: Math.floor((baseTime + 5000) / 1000) })) + '\n', 'utf8');
 fs.appendFileSync(first, JSON.stringify(response(5100, {
   type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Second question' }],
   internal_chat_message_metadata_passthrough: { turn_id: turn2 },
@@ -113,9 +115,9 @@ assert.equal(monitor.snapshot().find(item => item.turnId === turnId).status, 'do
 
 // 中断优先：迟到的 task_complete 不得把已中断回合改成完成。
 const turn3 = 'turn-3';
-fs.appendFileSync(first, JSON.stringify(event(7000, { type: 'task_started', turn_id: turn3, started_at: 1789813141 })) + '\n', 'utf8');
-fs.appendFileSync(first, JSON.stringify(event(7100, { type: 'turn_aborted', turn_id: turn3, reason: 'interrupted', completed_at: 1789813142 })) + '\n', 'utf8');
-fs.appendFileSync(first, JSON.stringify(event(7200, { type: 'task_complete', turn_id: turn3, completed_at: 1789813143, last_agent_message: 'late complete' })) + '\n', 'utf8');
+fs.appendFileSync(first, JSON.stringify(event(7000, { type: 'task_started', turn_id: turn3, started_at: Math.floor((baseTime + 7000) / 1000) })) + '\n', 'utf8');
+fs.appendFileSync(first, JSON.stringify(event(7100, { type: 'turn_aborted', turn_id: turn3, reason: 'interrupted', completed_at: Math.floor((baseTime + 7100) / 1000) })) + '\n', 'utf8');
+fs.appendFileSync(first, JSON.stringify(event(7200, { type: 'task_complete', turn_id: turn3, completed_at: Math.floor((baseTime + 7200) / 1000), last_agent_message: 'late complete' })) + '\n', 'utf8');
 monitor.scan(false);
 assert.equal(monitor.snapshot().find(item => item.turnId === turn3).status, 'cancelled');
 
@@ -126,7 +128,7 @@ fs.writeFileSync(raceFile, raceMetaLine.slice(0, 40), 'utf8');
 monitor.scan(false);
 assert.ok(!monitor.snapshot().some(item => item.threadId === 'race-thread'));
 fs.appendFileSync(raceFile, raceMetaLine.slice(40) + '\n', 'utf8');
-fs.appendFileSync(raceFile, JSON.stringify(event(6000, { type: 'task_started', turn_id: 'race-turn', started_at: 1789813140 })) + '\n', 'utf8');
+fs.appendFileSync(raceFile, JSON.stringify(event(6000, { type: 'task_started', turn_id: 'race-turn', started_at: Math.floor((baseTime + 6000) / 1000) })) + '\n', 'utf8');
 monitor.scan(false);
 const raceTask = monitor.snapshot().find(item => item.threadId === 'race-thread');
 assert.ok(raceTask);

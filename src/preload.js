@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld('petOffice', {
   refreshSkins: () => ipcRenderer.invoke('skins:refresh'),
   setCap: (petId, cap) => ipcRenderer.invoke('cap:set', { petId, cap }),
   openPath: p => ipcRenderer.invoke('shell:open', p),
+  openExternal: url => ipcRenderer.invoke('shell:external', url),
+  normalizeLinks: payload => ipcRenderer.invoke('links:normalize', payload || {}),
+  startCapture: petId => ipcRenderer.invoke('capture:start', petId || 'supervisor'),
   openCodex: threadId => ipcRenderer.invoke('codex:open', threadId),
   openPetdex: () => ipcRenderer.invoke('petdex:open'),
   pathForFile: file => {

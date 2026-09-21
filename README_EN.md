@@ -56,12 +56,12 @@ Want third-party models? The optional [OpenCodex](https://github.com/lidge-jun/o
 
 ## 📦 What's new
 
-**v0.13.0 · 2026-09-20**
+**v0.13.3 · 2026-09-22**
 
-- 🖥️ Multi-display placement and fullscreen avoidance (corner, hide, or keep)
-- 🔔 Quiet, standard, and detailed notification levels without interrupting live task state
-- 🧩 Rebuilt attachment cards plus typography and accessibility improvements
-- 🛡️ Local redacted crash reports, GitHub Release update checks, and optional code signing
+- 🎨 Warm Office, Dark Workbench, and system-matched interface themes
+- 🧭 One primary action on the overview; sensitive project actions expand only when needed
+- 🔔 Active and attention-needed tasks stay prominent while recent activity is collapsed by default
+- 🧩 Consistent hierarchy and readability across tabs, forms, projects, skins, and delegation
 
 See the 🗺️ [roadmap](docs/ROADMAP_EN.md) for the full iteration plan and previous versions.
 

@@ -15,6 +15,7 @@ const DIRS = {
   processed: path.join(APP_DIR, 'bridge', 'to-pets', 'processed'),
   runtime: path.join(APP_DIR, 'runtime'),
   crashes: path.join(APP_DIR, 'crashes'),
+  captures: path.join(APP_DIR, 'captures'),
   projectsRoot: path.join(HOME, 'Documents', 'PetOffice', 'projects'),
   petdexPets: path.join(HOME, '.petdex', 'pets'),
 };
@@ -29,7 +30,7 @@ const STATE_TEMP_FILE = path.join(APP_DIR, 'state.next.json');
 const LOG_FILE = path.join(DIRS.logs, 'app.log');
 const LOG_BACKUP_FILE = path.join(DIRS.logs, 'app.previous.log');
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
-const STATE_SCHEMA_VERSION = 4;
+const STATE_SCHEMA_VERSION = 5;
 
 let pendingState = null;
 let saveTimer = null;
@@ -48,9 +49,11 @@ const DEFAULT_STATE = {
     petScale: 1,
     reducedMotion: false,
     toggleShortcut: 'Control+Alt+P',
+    captureShortcut: 'Control+Alt+S',
     displayMode: 'cursor',
     fullscreenBehavior: 'corner',
     notificationMode: 'standard',
+    themeMode: 'warm',
     fontScale: 1,
     fontFamily: 'system',
     autoCheckUpdates: true,
