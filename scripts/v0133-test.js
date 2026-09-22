@@ -12,7 +12,7 @@ const renderer = read('renderer/app.js');
 const style = read('renderer/style.css');
 const main = read('src/main.js');
 
-assert.equal(pkg.version, '0.13.3');
+assert.ok(require('../src/release-manager').compareVersions(pkg.version, '0.13.3') >= 0);
 assert(config.includes("themeMode: 'warm'"), 'new installs need a stable warm theme default');
 
 for (const contract of [

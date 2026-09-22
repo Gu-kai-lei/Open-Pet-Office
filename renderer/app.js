@@ -21,6 +21,7 @@ let dragState = null;
 let composerPetId = null;
 let composerCloseTimer = null;
 let composerAttachments = [];
+let composerSubmitting = false;
 let diagnosticsReport = null;
 let diagnosticsInFlight = false;
 let fullscreenPetPosition = null;
@@ -1766,6 +1767,9 @@ function panelPage(pet, tab) {
       content += '<label class="field"><span>当前项目</span><select id="p-project">' + projectOptions() + '</select></label>' +
         '<div class="project-path">' + esc(project ? project.path : '请新建或添加一个项目工作区') + '</div>' +
         '<div class="button-row"><button class="btn" id="p-newproj">新建项目</button><button class="btn" id="p-addproj">添加文件夹</button><button class="btn" id="p-openproj">打开目录</button></div>' + projectManagementHtml(project);
+      for (const task of myTasks.filter(task => task.source === 'pet-chat' && ['queued', 'running', 'waiting_input'].includes(task.status))) {
+        content += '<button class="btn danger wide" data-cancel="' + esc(task.id) + '">取消对话 · ' + esc(short(task.brief, 36)) + '</button>';
+      }
     } else {
       content += '<label class="field"><span>用量上限（tokens）</span><input id="p-cap" type="number" min="0" step="10000" value="' + ((S.caps || {})[pet.id] || '') + '" placeholder="留空表示不限"></label>' +
         '<div class="metric-row"><span>累计记录</span><b>' + myTasks.reduce((total, task) => total + (task.tokens || 0), 0) + ' tokens</b></div>';
@@ -2338,6 +2342,9 @@ function openMenu(petId, x, y) {
       { label: '↺  重置主管上下文', fn: () => resetConversationContext('supervisor') },
       { label: '⌘  新建分工任务', fn: () => openComposer('supervisor', true) },
       { label: '◉  查看任务动态', fn: () => openActivity() },
+      ...activeTasks.filter(task => task.source === 'pet-chat').map(task => ({
+        label: '取消对话 · ' + short(task.brief, 24), danger: true, fn: () => window.petOffice.cancelTask(task.id),
+      })),
       { separator: true },
       ...S.pets.workers.map(worker => {
         const hidden = pets.get(worker.id).el.classList.contains('hidden-pet');
@@ -2778,12 +2785,28 @@ function renderComposerFiles() {
   resizeForAttachments();
 }
 
-function attachmentPromptBlock() {
-  if (!composerAttachments.length) return '';
-  const lines = composerAttachments.map(file => file.type === 'link'
+function attachmentPromptBlock(attachments = composerAttachments) {
+  if (!attachments.length) return '';
+  const lines = attachments.map(file => file.type === 'link'
     ? '- 网页链接：' + file.name + ' — ' + file.url
     : '- ' + (file.relPath || file.name) + '（' + (file.kind || '文件') + '，' + humanSize(file.size) + '）');
   return '\n\n附件与参考链接：\n' + lines.join('\n');
+}
+
+async function prepareComposerAttachments(projectId, attachments = composerAttachments.slice()) {
+  const prepared = [];
+  for (const file of attachments) {
+    if (file.type === 'link' || file.projectId === projectId) { prepared.push(file); continue; }
+    if (!file.path) throw new Error('附件缺少源文件路径，请重新拖入：' + file.name);
+    const result = await window.petOffice.ingestFiles([file.path], projectId);
+    if (!result || !result.ok || !result.files || !result.files.length) throw new Error((result && result.error) || '附件复制失败');
+    const replacement = { ...file, ...result.files[0], projectId };
+    prepared.push(replacement);
+    // Preserve the completed copy if a later attachment fails, so retrying does
+    // not duplicate files. Never replace attachments added to a newer composer.
+    composerAttachments = composerAttachments.map(item => item === file ? replacement : item);
+  }
+  return prepared;
 }
 
 async function ensureQuickProject() {
@@ -2859,6 +2882,7 @@ function bindComposerProjectPicker(targetPetId, modeGetter) {
   };
   popover.querySelector('#c-project-search').oninput = event => rebind(event.target.value);
   popover.querySelector('#c-create-project').onclick = async () => {
+    if (composerSubmitting) return;
     const input = popover.querySelector('#c-new-project');
     const name = input.value.trim();
     if (!name) { input.focus(); return; }
@@ -2874,13 +2898,16 @@ function bindComposerProjectPicker(targetPetId, modeGetter) {
   };
   popover.querySelectorAll('[data-pick-project]').forEach(button => {
     button.onclick = async () => {
-      await window.petOffice.selectProject(button.dataset.pickProject);
+      if (composerSubmitting) return;
+      if (!await window.petOffice.selectProject(button.dataset.pickProject)) return;
       S.activeProjectId = button.dataset.pickProject;
       $('#c-project-trigger').textContent = currentProject().name + '⌄';
       toggleProjectPicker(false);
+      renderComposerFiles();
     };
   });
   popover.querySelector('#c-add-folder').onclick = async () => {
+    if (composerSubmitting) return;
     const draft = $('#c-text').value;
     const project = await window.petOffice.addProject();
     if (!project) return;
@@ -2891,6 +2918,7 @@ function bindComposerProjectPicker(targetPetId, modeGetter) {
 }
 
 async function submitComposer(targetPetId, mode) {
+  if (composerSubmitting) return;
   const composer = $('#composer');
   const text = composer.querySelector('#c-text').value.trim();
   if (!text) {
@@ -2921,35 +2949,49 @@ async function submitComposer(targetPetId, mode) {
     participants = [{ petId: pet.id, name: pet.name, model: pet.model, use: true }];
   }
 
-  await Promise.all(participants.map(async participant => {
-    const pet = pets.get(participant.petId);
-    if (pet.model !== participant.model) {
-      pet.model = participant.model;
-      await window.petOffice.setModel(pet.id, pet.model);
-    }
-  }));
-  if (mode) {
-    showConfirm(text, participants, usePlanner, true);
-    return;
-  }
-
+  const projectId = S.activeProjectId;
+  const epoch = composerSurface.epoch;
+  composerSubmitting = true;
   const send = composer.querySelector('#c-send');
   send.disabled = true;
   send.textContent = '…';
-  const result = await window.petOffice.startChat({
-    taskText: text + attachmentPromptBlock(),
-    projectId: S.activeProjectId,
-    petId: participants[0].petId,
-    model: participants[0].model,
-  });
-  if (!result || !result.ok) {
+  try {
+    await Promise.all(participants.map(async participant => {
+      const pet = pets.get(participant.petId);
+      if (pet.model !== participant.model) {
+        pet.model = participant.model;
+        await window.petOffice.setModel(pet.id, pet.model);
+      }
+    }));
+    if (epoch !== composerSurface.epoch) return;
+    if (mode) {
+      showConfirm(text, participants, usePlanner, true);
+      return;
+    }
+
+    const attachments = await prepareComposerAttachments(projectId);
+    if (epoch !== composerSurface.epoch) return;
+    const result = await window.petOffice.startChat({
+      taskText: text + attachmentPromptBlock(attachments),
+      projectId,
+      petId: participants[0].petId,
+      model: participants[0].model,
+    });
+    if (!result || !result.ok) {
+      send.disabled = false;
+      send.textContent = '↑';
+      bubble('supervisor', (result && result.error) || '发送失败', 6000);
+      return;
+    }
+    if (epoch === composerSurface.epoch) closeComposer(true);
+    bubble(participants[0].petId, '收到，开始处理。', 5000);
+  } catch (error) {
+    bubble(targetPetId, error.message || '发送失败，请重试', 6000, 'attention');
+  } finally {
+    composerSubmitting = false;
     send.disabled = false;
     send.textContent = '↑';
-    bubble('supervisor', (result && result.error) || '发送失败', 6000);
-    return;
   }
-  closeComposer(true);
-  bubble(participants[0].petId, '收到，开始处理。', 5000);
 }
 
 function showConfirm(taskText, participants, usePlanner, mode) {
@@ -2974,33 +3016,47 @@ function showConfirm(taskText, participants, usePlanner, mode) {
   if (closeButton) closeButton.onclick = () => closeComposer();
   composer.querySelector('#c-back').onclick = () => openComposer(participants[0].petId, mode, taskText);
   composer.querySelector('#c-go').onclick = async () => {
+    if (composerSubmitting) return;
+    composerSubmitting = true;
+    const epoch = composerSurface.epoch;
     const go = composer.querySelector('#c-go');
     go.disabled = true;
     go.textContent = '正在启动…';
-    const composed = taskText + attachmentPromptBlock();
-    const result = mode
-      ? await window.petOffice.createMissionDraft({ taskText: composed, projectId: S.activeProjectId, participants })
-      : await window.petOffice.startChat({
-        taskText: composed,
-        projectId: S.activeProjectId,
-        petId: participants[0].petId,
-        model: participants[0].model,
-      });
-    if (!result || !result.ok) {
+    try {
+      const attachments = await prepareComposerAttachments(project.id);
+      if (epoch !== composerSurface.epoch) return;
+      const composed = taskText + attachmentPromptBlock(attachments);
+      const result = mode
+        ? await window.petOffice.createMissionDraft({ taskText: composed, projectId: project.id, participants })
+        : await window.petOffice.startChat({
+          taskText: composed,
+          projectId: project.id,
+          petId: participants[0].petId,
+          model: participants[0].model,
+        });
+      if (epoch !== composerSurface.epoch) return;
+      if (!result || !result.ok) {
+        go.disabled = false;
+        go.textContent = '确认开始';
+        bubble('supervisor', (result && result.error) || '启动失败', 6000);
+        return;
+      }
+      if (mode) {
+        missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
+        showMissionPlan(result.mission, taskText, participants);
+        bubble('supervisor', '依赖计划已生成，请确认后开工。', 7000);
+        return;
+      }
+      closeComposer(true);
+      summonWorkers(participants.filter(item => item.petId !== 'supervisor').map(item => item.petId), false);
+      bubble('supervisor', mode ? '收到，开始分工！' : '收到，开始处理。', 5000);
+    } catch (error) {
+      bubble('supervisor', error.message || '启动失败，请重试', 6000, 'attention');
+    } finally {
+      composerSubmitting = false;
       go.disabled = false;
       go.textContent = '确认开始';
-      bubble('supervisor', (result && result.error) || '启动失败', 6000);
-      return;
     }
-    if (mode) {
-      missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
-      showMissionPlan(result.mission, taskText, participants);
-      bubble('supervisor', '依赖计划已生成，请确认后开工。', 7000);
-      return;
-    }
-    closeComposer(true);
-    summonWorkers(participants.filter(item => item.petId !== 'supervisor').map(item => item.petId), false);
-    bubble('supervisor', mode ? '收到，开始分工！' : '收到，开始处理。', 5000);
   };
 }
 

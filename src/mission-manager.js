@@ -108,6 +108,8 @@ class MissionManager {
     this.missions = new Map();
     this.waiters = new Map();
     this.runningMissions = new Set();
+    this.operations = new Map();
+    this.progressTimers = new Map();
   }
 
   load() {
@@ -116,6 +118,23 @@ class MissionManager {
   }
 
   emit() { this.onSnapshot(this.snapshot()); }
+  beginOperation(mission) {
+    const previous = this.operations.get(mission.id);
+    if (previous) previous.abort();
+    const operation = new AbortController();
+    this.operations.set(mission.id, operation);
+    return operation;
+  }
+  operation(mission) { return this.operations.get(mission.id) || this.beginOperation(mission); }
+  current(mission, operation) {
+    return this.operations.get(mission.id) === operation && !operation.signal.aborted
+      && !TERMINAL.has(mission.status) && mission.status !== 'interrupted';
+  }
+  stoppedResult(mission) { return { ok: false, error: 'Mission 已停止，已忽略过期结果。', mission: this.publicMission(mission) }; }
+  flushProgress(mission) {
+    clearTimeout(this.progressTimers.get(mission.id));
+    this.progressTimers.delete(mission.id);
+  }
   supervisorRuntime(mission) {
     const dir = path.join(this.store.runtimeDir(mission.id), 'supervisor');
     fs.mkdirSync(dir, { recursive: true });
@@ -180,6 +199,7 @@ class MissionManager {
   }
 
   transition(mission, status, type, data = {}) {
+    this.flushProgress(mission);
     mission.status = status;
     this.store.event(mission, type, data);
     this.store.save(mission);
@@ -189,6 +209,7 @@ class MissionManager {
   async createDraft({ taskText, projectId, participants }) {
     const project = this.projects().find(item => item.id === projectId);
     if (!project) return { ok: false, error: '还没有项目。请先新建或选择一个项目。' };
+    if (project.archived) return { ok: false, error: '这个项目已归档，请先恢复项目。' };
     const allowedRoster = new Map(this.roster().map(item => [item.id, item]));
     const selected = (participants || []).filter(item => item.use && allowedRoster.has(item.petId)).slice(0, 4).map(item => {
       const pet = allowedRoster.get(item.petId);
@@ -206,10 +227,12 @@ class MissionManager {
     this.missions.set(mission.id, mission);
     this.store.create(mission);
     this.emit();
+    const operation = this.beginOperation(mission);
     const result = await this.planner.planMission({
       projectDir: project.path, missionDir: this.supervisorRuntime(mission), objective: mission.objective,
-      participants: selected, supervisorModel: this.supervisorModel(), threadId: null,
+      participants: selected, supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal,
     });
+    if (!this.current(mission, operation)) return this.stoppedResult(mission);
     mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
     if (!result.ok) {
       mission.error = result.error || '主管规划失败。';
@@ -233,7 +256,9 @@ class MissionManager {
     const mission = this.missions.get(id);
     if (!mission || !['awaiting_confirmation', 'needs_input'].includes(mission.status)) return { ok: false, error: '当前 Mission 不能重新规划。' };
     this.transition(mission, 'planning', 'mission.replanning');
-    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId });
+    const operation = this.beginOperation(mission);
+    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+    if (!this.current(mission, operation)) return this.stoppedResult(mission);
     mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
     if (!result.ok) { mission.error = result.error; this.transition(mission, 'needs_input', 'mission.plan_failed', { error: result.error }); return { ok: false, error: result.error, mission: this.publicMission(mission) }; }
     try {
@@ -247,12 +272,13 @@ class MissionManager {
     const mission = this.missions.get(id);
     if (!mission || mission.status !== 'awaiting_confirmation') return { ok: false, error: 'Mission 不在等待确认状态。' };
     this.transition(mission, 'running', 'mission.confirmed');
-    this.run(mission).catch(error => this.failMission(mission, error));
+    const operation = this.beginOperation(mission);
+    this.run(mission, operation).catch(error => this.failMission(mission, error, operation));
     return { ok: true, mission: this.publicMission(mission) };
   }
 
-  async run(mission) {
-    if (this.runningMissions.has(mission.id) || TERMINAL.has(mission.status)) return;
+  async run(mission, operation = this.operation(mission)) {
+    if (this.runningMissions.has(mission.id) || !this.current(mission, operation)) return;
     this.runningMissions.add(mission.id);
     try {
       if (!mission.baseline || !mission.integrationDir || !fs.existsSync(mission.integrationDir)) {
@@ -262,32 +288,34 @@ class MissionManager {
       }
       const maxWave = Math.max(0, ...(mission.tasks || []).map(task => task.wave || 0));
       for (let wave = 0; wave <= maxWave; wave++) {
-        if (mission.status === 'cancelled') return;
+        if (!this.current(mission, operation)) return;
         mission.currentWave = wave;
         const waveTasks = mission.tasks.filter(task => task.wave === wave && !['accepted', 'skipped', 'cancelled'].includes(task.status));
         for (const task of waveTasks) {
           const deps = task.dependsOn.map(id => mission.tasks.find(item => item.id === id));
-          if (deps.some(dep => !dep || !['accepted', 'skipped'].includes(dep.status))) {
+          if (deps.some(dep => !dep || !(dep.status === 'accepted' || (dep.status === 'skipped' && !dep.required && !dep.error)))) {
             task.status = 'skipped'; task.error = '依赖任务未通过'; task.finishedAt = Date.now();
           } else task.status = 'ready';
         }
         const runnable = waveTasks.filter(task => task.status === 'ready');
         if (!runnable.length) { this.store.save(mission); this.emit(); continue; }
-        await this.executeAndReviewWave(mission, runnable);
-        if (mission.status === 'needs_input' || mission.status === 'cancelled') return;
+        await this.executeAndReviewWave(mission, runnable, operation);
+        if (!this.current(mission, operation) || mission.status === 'needs_input') return;
       }
-      await this.finishMission(mission);
+      if (this.current(mission, operation)) await this.finishMission(mission, operation);
     } finally { this.runningMissions.delete(mission.id); }
   }
 
-  async executeAndReviewWave(mission, tasks) {
+  async executeAndReviewWave(mission, tasks, operation = this.operation(mission)) {
     let pending = tasks;
     while (pending.length) {
+      if (!this.current(mission, operation)) return;
       this.transition(mission, 'running', 'wave.started', { wave: mission.currentWave, taskIds: pending.map(task => task.id) });
-      await Promise.all(pending.map(task => this.executeTask(mission, task)));
-      if (mission.status === 'cancelled') return;
+      await Promise.all(pending.map(task => this.executeTask(mission, task, operation)));
+      if (!this.current(mission, operation)) return;
       this.transition(mission, 'reviewing', 'wave.review_started', { wave: mission.currentWave });
-      const review = await this.planner.reviewWave({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), mission, tasks: pending, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId });
+      const review = await this.planner.reviewWave({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), mission, tasks: pending, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+      if (!this.current(mission, operation)) return;
       mission.supervisorThreadId = review.threadId || mission.supervisorThreadId;
       if (!review.ok) {
         mission.error = '主管阶段检查失败: ' + review.error;
@@ -299,6 +327,7 @@ class MissionManager {
       const accepted = [];
       const retries = [];
       for (const task of pending) {
+        if (task.status === 'cancelled' || task.status === 'interrupted') continue;
         const decision = decisionMap.get(task.id) || { decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '主管未返回该节点的明确决策。' };
         task.review = { ...decision, at: Date.now() };
         if (decision.decision === 'accept' && task.status === 'succeeded') {
@@ -307,8 +336,17 @@ class MissionManager {
           task.status = 'retrying'; task.brief = decision.nextBrief || task.brief;
           if (decision.decision === 'reassign') {
             const next = mission.participants.find(item => item.petId === decision.nextAssignee) || mission.participants.find(item => item.petId === task.fallbackAssignee);
-            if (next) { task.assigneePetId = next.petId; task.assigneeName = next.name; task.model = decision.nextModel || task.fallbackModel || next.model || null; }
-          } else if (decision.nextModel && mission.participants.some(item => item.model === decision.nextModel || item.fallbackModel === decision.nextModel)) task.model = decision.nextModel;
+            if (next) {
+              task.assigneePetId = next.petId; task.assigneeName = next.name;
+              const allowed = new Set([next.model || null]);
+              if (next.fallbackModel) allowed.add(next.fallbackModel);
+              task.model = allowed.has(decision.nextModel) ? decision.nextModel
+                : (allowed.has(task.fallbackModel) ? task.fallbackModel : (next.model || null));
+            }
+          } else {
+            const participant = mission.participants.find(item => item.petId === task.assigneePetId);
+            if (participant && decision.nextModel && [participant.model, participant.fallbackModel].includes(decision.nextModel)) task.model = decision.nextModel;
+          }
           retries.push(task); mission.retryCount = (mission.retryCount || 0) + 1;
         } else if (decision.decision === 'skip' && !task.required) task.status = 'skipped';
         else { task.status = task.status === 'cancelled' ? 'cancelled' : 'failed'; task.error = decision.reason || task.error; }
@@ -325,7 +363,8 @@ class MissionManager {
     }
   }
 
-  async executeTask(mission, task) {
+  async executeTask(mission, task, operation = this.operation(mission)) {
+    if (!this.current(mission, operation) || task.status === 'cancelled') return;
     task.attempts = (task.attempts || 0) + 1;
     task.status = 'queued'; task.error = null; task.report = null; task.changeSet = null; task.updatedAt = Date.now();
     const workspace = this.workspace.prepareTask(mission, task);
@@ -353,6 +392,7 @@ class MissionManager {
     });
     await completion;
     this.waiters.delete(mission.id + ':' + task.id);
+    if (!this.current(mission, operation)) return;
     if (task.status === 'succeeded') {
       try {
         const rawReport = fs.readFileSync(resultPath, 'utf8');
@@ -377,6 +417,13 @@ class MissionManager {
     if (!mission) return false;
     const task = mission.tasks.find(item => item.id === split.join(':'));
     if (!task) return false;
+    if (TERMINAL.has(mission.status) || mission.status === 'interrupted' || ['cancelled', 'interrupted', 'accepted'].includes(task.status)) {
+      if (['done', 'failed', 'cancelled'].includes(event.type)) {
+        const resolve = this.waiters.get(mission.id + ':' + task.id);
+        if (resolve) resolve();
+      }
+      return true;
+    }
     const now = Date.now();
     if (event.type === 'queued') task.status = 'queued';
     else if (event.type === 'started') { task.status = 'running'; task.startedAt = now; }
@@ -391,7 +438,18 @@ class MissionManager {
       task.finishedAt = now;
     }
     task.updatedAt = now;
-    this.store.save(mission); this.emit(); this.onTaskEvent(event, mission, sanitizeValue(task));
+    if (event.type === 'progress' || event.type === 'usage') {
+      if (!this.progressTimers.has(mission.id)) {
+        this.progressTimers.set(mission.id, setTimeout(() => {
+          this.progressTimers.delete(mission.id);
+          this.store.save(mission); this.emit();
+        }, 150));
+      }
+    } else {
+      this.flushProgress(mission);
+      this.store.save(mission); this.emit();
+    }
+    this.onTaskEvent(event, mission, sanitizeValue(task));
     if (['done', 'failed', 'cancelled'].includes(event.type)) {
       const resolve = this.waiters.get(mission.id + ':' + task.id);
       if (resolve) resolve();
@@ -399,9 +457,19 @@ class MissionManager {
     return true;
   }
 
-  async finishMission(mission) {
+  async finishMission(mission, operation = this.operation(mission)) {
+    if (!this.current(mission, operation)) return;
+    const incomplete = (mission.tasks || []).filter(task => task.required && task.status !== 'accepted');
+    if (incomplete.length) {
+      mission.error = '必需任务未通过：' + incomplete.map(task => task.title || task.id).join('、');
+      mission.finishedAt = Date.now();
+      this.transition(mission, 'failed', 'mission.required_tasks_failed', { taskIds: incomplete.map(task => task.id) });
+      this.onDone(this.publicMission(mission));
+      return;
+    }
     this.transition(mission, 'reviewing', 'mission.final_review_started');
-    const review = await this.planner.finalReview({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), mission, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId });
+    const review = await this.planner.finalReview({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), mission, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+    if (!this.current(mission, operation)) return;
     mission.supervisorThreadId = review.threadId || mission.supervisorThreadId;
     if (!review.ok) { mission.error = '主管最终复核失败: ' + review.error; this.transition(mission, 'needs_input', 'mission.final_review_failed', { error: review.error }); return; }
     mission.finalReview = review.value;
@@ -416,6 +484,7 @@ class MissionManager {
   }
 
   applyFinal(mission) {
+    if (!this.current(mission, this.operation(mission))) return;
     const result = this.workspace.applyFinal(mission, mission.finalChangeSet);
     mission.pendingAction = null; mission.finishedAt = Date.now(); mission.applyBackup = result.backup;
     const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partially_succeeded' : 'completed';
@@ -446,6 +515,8 @@ class MissionManager {
     const mission = this.missions.get(id);
     if (!mission || TERMINAL.has(mission.status)) return { ok: false, error: 'Mission 已结束。' };
     mission.status = 'cancelled'; mission.finishedAt = Date.now();
+    const operation = this.operations.get(mission.id);
+    if (operation) operation.abort();
     for (const task of mission.tasks || []) {
       if (['queued', 'running', 'reviewing', 'retrying'].includes(task.status)) this.dispatcher.cancel(mission.id + ':' + task.id);
       if (!['accepted', 'failed', 'skipped'].includes(task.status)) task.status = 'cancelled';
@@ -457,7 +528,9 @@ class MissionManager {
   cancelTask(id, taskIdValue) {
     const mission = this.missions.get(id); const task = mission && mission.tasks.find(item => item.id === taskIdValue);
     if (!task) return { ok: false, error: '找不到任务节点。' };
-    this.dispatcher.cancel(mission.id + ':' + task.id); task.status = 'cancelled'; task.finishedAt = Date.now();
+    if (TERMINAL.has(mission.status) || ['accepted', 'failed', 'skipped', 'cancelled'].includes(task.status)) return { ok: false, error: '任务节点已结束。' };
+    task.status = 'cancelled'; task.finishedAt = Date.now();
+    this.dispatcher.cancel(mission.id + ':' + task.id);
     for (const dependent of mission.tasks.filter(item => item.dependsOn.includes(task.id) && !['accepted', 'failed', 'cancelled'].includes(item.status))) dependent.status = 'blocked';
     this.store.event(mission, 'task.cancelled', { taskId: task.id }); this.store.save(mission); this.emit();
     return { ok: true, mission: this.publicMission(mission) };
@@ -466,9 +539,11 @@ class MissionManager {
   async resume(id) {
     const mission = this.missions.get(id);
     if (!mission || mission.status !== 'interrupted') return { ok: false, error: 'Mission 不在可恢复状态。' };
+    const operation = this.beginOperation(mission);
     if (!mission.plan || !(mission.tasks || []).length) {
       this.transition(mission, 'planning', 'mission.planning_resumed');
-      const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId });
+      const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+      if (!this.current(mission, operation)) return this.stoppedResult(mission);
       mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
       if (!result.ok) { mission.error = result.error; this.transition(mission, 'needs_input', 'mission.plan_failed', { error: result.error }); return { ok: false, error: result.error, mission: this.publicMission(mission) }; }
       try { mission.plan = validatePlan(result.value, mission.participants); mission.tasks = mission.plan.tasks; this.transition(mission, 'awaiting_confirmation', 'mission.plan_ready', { recovered: true }); return { ok: true, mission: this.publicMission(mission) }; }
@@ -477,18 +552,28 @@ class MissionManager {
     for (const task of mission.tasks || []) if (!['accepted', 'skipped', 'failed', 'cancelled'].includes(task.status)) task.status = 'blocked';
     mission.error = null; mission.pendingAction = null;
     this.transition(mission, 'running', 'mission.resumed');
-    this.run(mission).catch(error => this.failMission(mission, error));
+    this.run(mission, operation).catch(error => this.failMission(mission, error, operation));
     return { ok: true, mission: this.publicMission(mission) };
   }
 
-  failMission(mission, error) {
+  failMission(mission, error, operation = this.operation(mission)) {
+    if (!this.current(mission, operation)) return;
     this.log('mission failed: ' + (error && error.stack || error));
     mission.error = String(error && error.message || error); mission.finishedAt = Date.now();
     this.transition(mission, 'failed', 'mission.failed', { error: mission.error }); this.onDone(this.publicMission(mission));
+    operation.abort();
+    for (const task of mission.tasks || []) if (['queued', 'running', 'reviewing'].includes(task.status)) {
+      task.status = 'cancelled';
+      this.dispatcher.cancel(mission.id + ':' + task.id);
+    }
+    this.store.save(mission); this.emit();
   }
 
   shutdown() {
     for (const mission of this.missions.values()) {
+      this.flushProgress(mission);
+      const operation = this.operations.get(mission.id);
+      if (operation) operation.abort();
       if (!['running', 'reviewing', 'planning'].includes(mission.status)) continue;
       mission.status = 'interrupted'; mission.interruptionReason = 'Pet Office 正在退出。';
       for (const task of mission.tasks || []) if (['queued', 'running', 'reviewing'].includes(task.status)) task.status = 'interrupted';

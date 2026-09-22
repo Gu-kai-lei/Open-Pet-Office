@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/main.js'), 'utf8');
-const code = source.slice(source.indexOf('async function startPetChat('), source.indexOf('async function cancelPetChat('));
+const code = source.slice(source.indexOf('async function startPetChat('), source.indexOf('function conversationKey('));
 
 function fixture(saved = true) {
   const calls = [];
@@ -24,9 +24,12 @@ function fixture(saved = true) {
       setThreadName: async () => { calls.push('name'); },
       startTurn: async () => { calls.push('turn'); return { turnId: 'turn' }; },
       unsubscribeThread: async () => { calls.push('unsubscribe'); },
+      interruptTurn: async () => { calls.push('interrupt'); },
     },
     cfg: { saveState() {}, log() {} }, persistStandaloneTask() {}, send() {}, finishChat() {},
   };
+  context.chatForTask = id => [...context.liveChats.values()].find(chat => chat.task.id === id);
+  context.finishChat = chat => { context.liveChats.delete(chat.threadId); };
   vm.createContext(context);
   vm.runInContext(code, context);
   return { context, calls, run: () => context.startPetChat({ taskText: 'hello', projectId: 'p1', petId: 'supervisor' }) };
@@ -61,5 +64,18 @@ function fixture(saved = true) {
   assert.equal((await racing.run()).ok, false);
   release({ threadId: 'new-thread' });
   assert.equal((await first).ok, true);
+  const cancelling = fixture(false);
+  let acknowledge;
+  const entered = new Promise(resolve => {
+    cancelling.context.appServer.startTurn = () => { resolve(); return new Promise(done => { acknowledge = done; }); };
+  });
+  const sending = cancelling.run();
+  await entered;
+  const current = [...cancelling.context.liveChats.values()][0];
+  await cancelling.context.cancelPetChat(current.task.id);
+  acknowledge({ turnId: 'late-turn' });
+  assert.equal((await sending).ok, false);
+  assert(cancelling.calls.includes('interrupt'));
+  assert.equal(cancelling.context.liveChats.size, 0);
   console.log('PASS: restore, persist, duplicate send, explicit ownership conflict, failed resume, concurrent creation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

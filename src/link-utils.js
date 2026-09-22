@@ -45,7 +45,10 @@ function normalizeDroppedLinks({ uriList = '', plain = '', html = '' } = {}) {
     if (!url || seen.has(url)) continue;
     seen.add(url);
     const parsed = new URL(url);
-    const fallback = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname).replace(/[-_]+/g, ' ');
+    const segment = parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname;
+    let fallback = segment;
+    try { fallback = decodeURIComponent(segment); } catch {}
+    fallback = fallback.replace(/[-_]+/g, ' ');
     output.push({ type: 'link', url, name: candidate.title || fallback || parsed.hostname, domain: parsed.hostname, kind: '链接', size: 0 });
     if (output.length >= 20) break;
   }

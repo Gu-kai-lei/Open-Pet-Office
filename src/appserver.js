@@ -39,52 +39,61 @@ class AppServerClient {
     if (this.readyPromise) return this.readyPromise;
     this.closed = false;
     this.lastStartedAt = Date.now();
-    this.readyPromise = new Promise((resolve, reject) => {
-      const command = process.platform === 'win32' ? 'cmd.exe' : 'codex';
-      const args = process.platform === 'win32'
-        ? ['/c', 'codex', 'app-server', '--listen', 'stdio://']
-        : ['app-server', '--listen', 'stdio://'];
-      try {
-        this.child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
-      } catch (error) {
-        reject(error);
-        return;
+    this.buffer = '';
+    const command = process.platform === 'win32' ? 'cmd.exe' : 'codex';
+    const args = process.platform === 'win32'
+      ? ['/c', 'codex', 'app-server', '--listen', 'stdio://']
+      : ['app-server', '--listen', 'stdio://'];
+    let child;
+    try {
+      child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+    } catch (error) {
+      this.lastError = error.message;
+      return Promise.reject(error);
+    }
+    this.child = child;
+    const disconnect = (error, code = null) => {
+      // An old process can exit after stop() and a replacement start().
+      if (this.child !== child) return;
+      this.child = null;
+      this.readyPromise = null;
+      this.buffer = '';
+      this.lastError = error.message;
+      for (const entry of this.pending.values()) {
+        clearTimeout(entry.timer);
+        entry.reject(error);
       }
-      this.child.stdout.setEncoding('utf8');
-      this.child.stdout.on('data', chunk => this.consume(chunk));
-      this.child.stderr.setEncoding('utf8');
-      this.child.stderr.on('data', chunk => {
-        const text = String(chunk).trim();
-        if (text) {
-          this.lastError = text.slice(0, 600);
-          cfg.log('app-server stderr: ' + text.slice(0, 400));
-        }
-      });
-      this.child.on('exit', code => {
-        cfg.log('app-server exited: ' + code);
-        this.child = null;
-        this.readyPromise = null;
-        for (const [, entry] of this.pending) {
-          clearTimeout(entry.timer);
-          entry.reject(new Error('app-server exited: ' + code));
-        }
-        this.pending.clear();
-        this.emit({ type: 'closed', code });
-      });
-      this.request('initialize', { clientInfo: CLIENT_INFO, capabilities: null }, 20000)
-        .then(() => {
-          this.notify('initialized', {});
-          resolve(this);
-        })
-        .catch(error => {
-          this.lastError = error.message;
-          const child = this.child;
-          this.child = null;
-          this.readyPromise = null;
-          try { if (child) child.kill(); } catch {}
-          reject(error);
-        });
+      this.pending.clear();
+      this.emit({ type: 'closed', code });
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { if (this.child === child) this.consume(chunk); });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => {
+      if (this.child !== child) return;
+      const text = String(chunk).trim();
+      if (text) {
+        this.lastError = text.slice(0, 600);
+        cfg.log('app-server stderr: ' + text.slice(0, 400));
+      }
     });
+    child.on('exit', code => disconnect(new Error('app-server exited: ' + code), code));
+    child.on('error', error => disconnect(error));
+    if (child.stdin.on) child.stdin.on('error', error => disconnect(error));
+    this.readyPromise = this.request('initialize', { clientInfo: CLIENT_INFO, capabilities: null }, 20000)
+      .then(() => {
+        if (this.child !== child) throw new Error('app-server connection replaced');
+        this.notify('initialized', {});
+        this.lastError = null;
+        return this;
+      })
+      .catch(error => {
+        if (this.child === child) {
+          disconnect(error);
+          try { child.kill(); } catch {}
+        }
+        throw error;
+      });
     return this.readyPromise;
   }
 
@@ -218,17 +227,19 @@ class AppServerClient {
 
   stop() {
     this.closed = true;
+    const child = this.child;
+    this.child = null;
+    this.readyPromise = null;
+    this.buffer = '';
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(new Error('app-server stopped'));
     }
     this.pending.clear();
-    if (this.child) {
-      try { this.child.stdin.end(); } catch {}
-      try { this.child.kill(); } catch {}
+    if (child) {
+      try { child.stdin.end(); } catch {}
+      try { child.kill(); } catch {}
     }
-    this.child = null;
-    this.readyPromise = null;
   }
 
   health() {

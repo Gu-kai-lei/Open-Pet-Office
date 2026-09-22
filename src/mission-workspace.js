@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const { workspacePath } = require('./path-safety');
 
 const SKIP_DIRS = new Set(['.git', '.pet-office', 'node_modules', 'dist', 'build', '.cache', '.next', 'coverage']);
 
@@ -190,7 +191,7 @@ class MissionWorkspace {
   applyChangeSet(targetRoot, changeSet) {
     for (const change of (changeSet && changeSet.changes) || []) {
       const rel = safeRel(change.path);
-      const target = path.join(targetRoot, rel);
+      const target = workspacePath(targetRoot, rel);
       if (change.kind === 'deleted') {
         if (fs.existsSync(target)) fs.rmSync(target, { force: true });
       } else {

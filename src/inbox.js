@@ -4,6 +4,7 @@
 // 这样主管、工作者和任何接入的模型都能直接按路径读取。
 const fs = require('fs');
 const path = require('path');
+const { workspacePath } = require('./path-safety');
 
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
@@ -37,16 +38,28 @@ function safeFileName(name) {
   return limited || 'file';
 }
 
-function uniqueTarget(dir, name) {
+function candidateTarget(dir, name, index) {
   const extension = path.extname(name);
   const stem = extension ? name.slice(0, name.length - extension.length) : name;
-  let target = path.join(dir, name);
-  let index = 1;
-  while (fs.existsSync(target) && index <= 999) {
-    target = path.join(dir, stem + '-' + index + extension);
-    index += 1;
+  return path.join(dir, index ? stem + '-' + index + extension : name);
+}
+
+function copyUnique(source, projectPath, name) {
+  for (let index = 0; index <= 9999; index++) {
+    const target = workspacePath(projectPath, path.join('inbox', path.basename(candidateTarget('', name, index))));
+    try { fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL); return target; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
-  return target;
+  throw new Error('同名附件过多，请重命名后重试');
+}
+
+async function copyUniqueAsync(source, projectPath, name) {
+  for (let index = 0; index <= 9999; index++) {
+    const target = workspacePath(projectPath, path.join('inbox', path.basename(candidateTarget('', name, index))));
+    try { await fs.promises.copyFile(source, target, fs.constants.COPYFILE_EXCL); return target; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
+  throw new Error('同名附件过多，请重命名后重试');
 }
 
 function ingestFiles({ paths, projectPath, maxFiles = MAX_FILES, maxBytes = MAX_FILE_BYTES } = {}) {
@@ -60,9 +73,8 @@ function ingestFiles({ paths, projectPath, maxFiles = MAX_FILES, maxBytes = MAX_
     result.error = '没有收到文件。';
     return result;
   }
-  const inbox = path.join(projectPath, 'inbox');
   try {
-    fs.mkdirSync(inbox, { recursive: true });
+    fs.mkdirSync(workspacePath(projectPath, 'inbox'), { recursive: true });
   } catch (error) {
     result.error = '无法创建工作区收件箱：' + error.message;
     return result;
@@ -87,9 +99,9 @@ function ingestFiles({ paths, projectPath, maxFiles = MAX_FILES, maxBytes = MAX_
       result.skipped.push({ path: source, reason: '超过 ' + Math.round(maxBytes / 1048576) + 'MB' });
       continue;
     }
-    const target = uniqueTarget(inbox, safeFileName(source));
+    let target;
     try {
-      fs.copyFileSync(source, target);
+      target = copyUnique(source, projectPath, safeFileName(source));
     } catch (error) {
       result.skipped.push({ path: source, reason: '复制失败：' + error.message });
       continue;
@@ -120,9 +132,8 @@ async function ingestFilesAsync({ paths, projectPath, maxFiles = MAX_FILES, maxB
     result.error = '没有收到文件。';
     return result;
   }
-  const inbox = path.join(projectPath, 'inbox');
   try {
-    await fs.promises.mkdir(inbox, { recursive: true });
+    await fs.promises.mkdir(workspacePath(projectPath, 'inbox'), { recursive: true });
   } catch (error) {
     result.error = '无法创建工作区收件箱：' + error.message;
     return result;
@@ -148,10 +159,10 @@ async function ingestFilesAsync({ paths, projectPath, maxFiles = MAX_FILES, maxB
       result.skipped.push({ path: source, reason: '超过 ' + Math.round(maxBytes / 1048576) + 'MB' });
       continue;
     }
-    const target = uniqueTarget(inbox, safeFileName(source));
+    let target;
     try {
       if (onProgress) onProgress({ phase: 'copying', index, total: list.length, name: path.basename(source), size: stat.size });
-      await fs.promises.copyFile(source, target);
+      target = await copyUniqueAsync(source, projectPath, safeFileName(source));
     } catch (error) {
       result.skipped.push({ path: source, reason: '复制失败：' + error.message });
       continue;

@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('petOffice', {
     } catch {}
     return (file && file.path) || null;
   },
-  ingestFiles: paths => ipcRenderer.invoke('files:ingest', { paths: Array.isArray(paths) ? paths : [] }),
+  ingestFiles: (paths, projectId) => ipcRenderer.invoke('files:ingest', { paths: Array.isArray(paths) ? paths : [], projectId }),
   refreshQuota: () => ipcRenderer.invoke('quota:refresh'),
   diagnostics: () => ipcRenderer.invoke('diagnostics:get'),
   displays: () => ipcRenderer.invoke('desktop:displays'),

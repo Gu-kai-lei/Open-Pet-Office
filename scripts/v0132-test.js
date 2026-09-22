@@ -12,7 +12,7 @@ const renderer = read('renderer/app.js');
 const style = read('renderer/style.css');
 const main = read('src/main.js');
 
-assert.ok(pkg.version === '0.13.2' || pkg.version.startsWith('0.13.3'), 'v0.13.2 contracts must remain in later patch releases');
+assert.ok(require('../src/release-manager').compareVersions(pkg.version, '0.13.2') >= 0, 'v0.13.2 contracts must remain in later releases');
 
 for (const contract of [
   "element.classList.toggle('hidden', !mode)",

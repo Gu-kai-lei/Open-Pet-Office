@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/main.js'), 'utf8');
 const code = source.slice(source.indexOf('function appServerItemProgress('), source.indexOf('function finishChat('));
-const context = {};
+const context = { safeProgressText: require('../src/session-monitor')._internals.redact };
 vm.createContext(context);
 vm.runInContext(code, context);
 

@@ -11,7 +11,8 @@ const dispatcher = require('./dispatcher');
 const planner = require('./planner');
 const bridge = require('./bridge');
 const { AppServerClient } = require('./appserver');
-const { CodexSessionMonitor } = require('./session-monitor');
+const { CodexSessionMonitor, _internals: { redact: safeProgressText } } = require('./session-monitor');
+const { workspacePath } = require('./path-safety');
 const inbox = require('./inbox');
 const diagnostics = require('./diagnostics');
 const { MissionManager } = require('./mission-manager');
@@ -478,22 +479,22 @@ function appServerItemProgress(method, item) {
   const completed = method === 'item/completed';
   if (type.includes('command')) {
     const command = item.command || item.commandLine || item.cmd || '';
-    return { stage: 'command', text: (completed ? '已完成命令' : '正在运行命令') + (command ? ' · ' + String(command).replace(/\s+/g, ' ').slice(0, 180) : '') };
+    return { stage: 'command', text: (completed ? '已完成命令' : '正在运行命令') + (command ? ' · ' + safeProgressText(command, 180) : '') };
   }
   if (type.includes('file') || type.includes('patch')) {
     const pathText = item.path || item.filePath || (Array.isArray(item.changes) && item.changes[0] && (item.changes[0].path || item.changes[0].filePath)) || '';
-    return { stage: 'file', text: (completed ? '已更新文件' : '正在修改文件') + (pathText ? ' · ' + String(pathText).slice(0, 180) : '') };
+    return { stage: 'file', text: (completed ? '已更新文件' : '正在修改文件') + (pathText ? ' · ' + safeProgressText(pathText, 180) : '') };
   }
   if (type.includes('tool') || type.includes('mcp')) {
     const name = item.name || item.tool || item.server || '';
-    return { stage: 'tool', text: (completed ? '工具调用完成' : '正在调用工具') + (name ? ' · ' + String(name).slice(0, 120) : '') };
+    return { stage: 'tool', text: (completed ? '工具调用完成' : '正在调用工具') + (name ? ' · ' + safeProgressText(name, 120) : '') };
   }
   if (type.includes('reason') || type.includes('analysis')) return { stage: 'thinking', text: completed ? '分析完成，准备下一步…' : '正在分析任务…' };
   return null;
 }
 
 function finishChat(chat, status, error) {
-  if (!chat) return;
+  if (!chat || liveChats.get(chat.threadId) !== chat) return;
   clearTimeout(chat.flushTimer);
   flushChatDelta(chat);
   chat.task.status = status === 'completed' ? 'done' : (status === 'interrupted' ? 'cancelled' : 'failed');
@@ -528,7 +529,7 @@ function releaseFinishedThread(threadId) {
     .finally(() => {
       clearTimeout(appServerIdleTimer);
       appServerIdleTimer = setTimeout(() => {
-        if (!liveChats.size) appServer.stop();
+        if (!liveChats.size && !startingChats.size) appServer.stop();
       }, 120);
     });
 }
@@ -607,7 +608,7 @@ function queueServerInteraction(event) {
 function scheduleAppServerIdleStop(delayMs = 150) {
   clearTimeout(appServerIdleTimer);
   appServerIdleTimer = setTimeout(() => {
-    if (!liveChats.size) appServer.stop();
+    if (!liveChats.size && !startingChats.size) appServer.stop();
   }, delayMs);
 }
 
@@ -666,6 +667,8 @@ function onAppServerEvent(event) {
   const params = event.params || {};
   const chat = params.threadId && liveChats.get(params.threadId);
   if (!chat) return;
+  const eventTurnId = params.turnId || (params.turn && params.turn.id);
+  if (eventTurnId && chat.turnId && eventTurnId !== chat.turnId) return;
 
   const itemProgress = appServerItemProgress(event.method, params.item);
   if (itemProgress) {
@@ -788,6 +791,10 @@ async function startPetChat({ taskText, projectId, petId, model }) {
     send('chat:event', { type: 'started', taskId: task.id, petId: pet.id, threadId, text });
     const result = await appServer.startTurn({ threadId, text, model: task.model });
     chat.turnId = (result && (result.turnId || (result.turn && result.turn.id))) || null;
+    if (chat.cancelRequested) {
+      if (chat.turnId) await appServer.interruptTurn({ threadId, turnId: chat.turnId });
+      return { ok: false, error: '任务已取消。' };
+    }
     chat.task.turnId = chat.turnId;
     persistStandaloneTask(chat.task);
     cfg.saveState(state);
@@ -808,6 +815,7 @@ async function startPetChat({ taskText, projectId, petId, model }) {
 async function cancelPetChat(taskId) {
   const chat = chatForTask(taskId);
   if (!chat) return false;
+  chat.cancelRequested = true;
   try {
     if (chat.turnId) await appServer.interruptTurn({ threadId: chat.threadId, turnId: chat.turnId });
   } catch (error) {
@@ -1112,14 +1120,15 @@ function captureFingerprint(image) {
 function saveCapturedImage(image) {
   let project = activeProject();
   if (!project) project = createProjectDir('快速提问-' + new Date().toISOString().slice(0, 10));
-  const dir = path.join(project.path, 'inbox', 'screenshots');
+  const dir = workspacePath(project.path, path.join('inbox', 'screenshots'));
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   let target = path.join(dir, 'screenshot-' + stamp + '.png');
   let suffix = 1;
   while (fs.existsSync(target)) target = path.join(dir, 'screenshot-' + stamp + '-' + suffix++ + '.png');
   const png = image.toPNG();
-  fs.writeFileSync(target, png);
+  workspacePath(project.path, path.relative(project.path, target));
+  fs.writeFileSync(target, png, { flag: 'wx' });
   const size = image.getSize();
   const previewWidth = Math.min(360, Math.max(1, size.width));
   const preview = size.width > previewWidth ? image.resize({ width: previewWidth, quality: 'good' }) : image;
@@ -1128,7 +1137,7 @@ function saveCapturedImage(image) {
   return {
     project: { id: project.id, name: project.name, path: project.path },
     file: {
-      type: 'file', source: 'capture', name: path.basename(target), path: target,
+      type: 'file', source: 'capture', projectId: project.id, name: path.basename(target), path: target,
       relPath: path.relative(project.path, target).split(path.sep).join('/'), kind: '图片', size: png.length,
       width: size.width, height: size.height, previewDataUrl: preview.toDataURL(),
     },
@@ -1609,6 +1618,7 @@ ipcMain.handle('capture:start', (e, petId) => startScreenCapture(String(petId ||
 ipcMain.handle('files:ingest', async (e, payload = {}) => {
   const paths = Array.isArray(payload.paths) ? payload.paths : [];
   let proj = payload.projectId ? state.projects.find(item => item.id === payload.projectId) : activeProject();
+  if (payload.projectId && (!proj || proj.archived)) return { ok: false, files: [], error: '目标项目不存在或已归档。' };
   if (!proj) {
     const stamp = new Date().toISOString().slice(0, 10);
     proj = createProjectDir('上传-' + stamp);
@@ -1620,7 +1630,7 @@ ipcMain.handle('files:ingest', async (e, payload = {}) => {
     onProgress: progress => send('files:progress', { ...progress, projectId: proj.id, projectName: proj.name }),
   });
   cfg.log('files:ingest ' + JSON.stringify({ received: result.files.length, skipped: result.skipped.length, project: proj.name }));
-  return { ...result, project: { id: proj.id, name: proj.name, path: proj.path } };
+  return { ...result, files: result.files.map(file => ({ ...file, projectId: proj.id })), project: { id: proj.id, name: proj.name, path: proj.path } };
 });
 ipcMain.handle('codex:open', async (e, threadId) => {
   const live = threadId && liveChats.get(threadId);

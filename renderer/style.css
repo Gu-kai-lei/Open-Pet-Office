@@ -279,6 +279,8 @@ button { -webkit-app-region: no-drag; }
 #panel { width: 370px; max-height: min(680px, 78vh); overflow: hidden; border-radius: var(--radius); }
 #activity { width: 420px; max-height: min(720px, 82vh); overflow: hidden; border-radius: var(--radius); }
 #activity.pet-activity {
+  --surface-elevated: #303238; --surface-secondary: #393b42; --border-strong: rgba(255,255,255,.18); --text: #f7f7f8;
+  color-scheme: dark;
   display: flex; flex-direction: column; max-height: min(500px, 62vh); overflow: hidden;
   color: #f7f7f8; background: rgba(27,28,32,.97); border-color: rgba(255,255,255,.10);
   border-radius: 20px; box-shadow: 0 16px 42px rgba(0,0,0,.38); backdrop-filter: blur(22px);
@@ -300,6 +302,8 @@ button { -webkit-app-region: no-drag; }
 #activity.pet-activity .activity-task-copy small { color: #9698a0; }
 #activity.pet-activity .activity-task-copy .activity-progress { color: #ead4aa; background: rgba(232,166,65,.12); }
 #activity.pet-activity .text-btn { color: #7db2ff; }
+#activity.pet-activity .btn { color: var(--text); }
+#activity.pet-activity .btn.danger { color: #f19090; }
 #activity.pet-activity .interaction-list { max-height: none; overflow: visible; padding: 10px 11px; border-color: rgba(255,255,255,.08); background: rgba(255,176,52,.06); }
 #activity.pet-activity .interaction-card { padding: 9px; }
 #activity.pet-activity .interaction-card { color: #f4f2ed; background: #303035; border-color: rgba(255,183,70,.28); box-shadow: none; }
@@ -405,6 +409,8 @@ button { -webkit-app-region: no-drag; }
 }
 .field select:focus, .field input:focus, .prompt-input:focus, .project-search:focus, .new-project-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(242,166,43,.14); }
 .inline-field { display: flex; gap: 7px; }
+.inline-field input { min-width: 0; }
+.inline-field .btn { flex-shrink: 0; white-space: nowrap; }
 .project-path { padding: 8px 10px; border-radius: 10px; color: var(--muted); background: var(--soft); font-size: 10px; word-break: break-all; user-select: text; }
 .capability-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: -4px 0 9px; }
 .capability-tags i { padding: 3px 7px; color: #79551b; background: #fff0d0; border-radius: 999px; font-size: 8px; font-style: normal; font-weight: 650; }
@@ -772,6 +778,7 @@ body.theme-dark {
 .appearance-actions > span, .project-summary > span { color: #8a5a11; background: rgba(242, 166, 43, .15); }
 
 .pet-composer .composer-stack { gap: 6px; }
+.pet-composer .composer-files { color-scheme: dark; }
 .pet-composer .composer-project-line { margin-top: 0; padding: 8px 12px; border-radius: 12px; box-shadow: var(--shadow-raised); }
 .pet-composer .delegation-options { margin-bottom: 0; padding: 12px; border-radius: 14px; box-shadow: var(--shadow-raised); }
 .pet-composer .composer-input-row { box-shadow: 0 14px 34px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.04); }

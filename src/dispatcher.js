@@ -2,6 +2,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { _internals: { redact } } = require('./session-monitor');
 const { log, CODEX_HOME } = require('./config');
 
 const running = new Map();
@@ -118,8 +119,7 @@ function run(t) {
 }
 
 function oneLine(value, limit = 240) {
-  const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
-  return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+  return redact(value, limit);
 }
 
 function progressFromEvent(obj) {
@@ -198,25 +198,29 @@ function cancel(taskId) {
     emit({ type: 'cancelled', taskId });
     return true;
   }
-  r.cancelled = true;
+  stopProcessTree(r);
   emit({ type: 'cancelled', taskId });
-  try { spawn('cmd.exe', ['/c', 'taskkill', '/PID', String(r.child.pid), '/T', '/F'], { windowsHide: true }); } catch (e) { log('cancel: ' + e.message); }
   return true;
 }
 
 function stopProcessTree(runtime) {
   if (!runtime || !runtime.child) return;
   runtime.cancelled = true;
-  try { runtime.child.kill(); } catch {}
   if (process.platform === 'win32' && runtime.child.pid) {
     try {
       const killer = spawn('taskkill.exe', ['/PID', String(runtime.child.pid), '/T', '/F'], {
         windowsHide: true,
         stdio: 'ignore',
       });
+      killer.on('error', error => {
+        log('taskkill: ' + error.message);
+        try { runtime.child.kill(); } catch {}
+      });
       if (killer.unref) killer.unref();
+      return;
     } catch (error) { log('shutdown taskkill: ' + error.message); }
   }
+  try { runtime.child.kill(); } catch {}
 }
 
 function shutdown() {

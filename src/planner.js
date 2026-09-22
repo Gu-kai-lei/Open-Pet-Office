@@ -59,13 +59,15 @@ const FINAL_SCHEMA = {
 
 function stopChild(child) {
   if (!child) return;
-  try { child.kill(); } catch {}
   if (process.platform === 'win32' && child.pid) {
     try {
       const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.on('error', () => { try { child.kill(); } catch {} });
       if (killer.unref) killer.unref();
+      return;
     } catch {}
   }
+  try { child.kill(); } catch {}
 }
 
 // 让主管模型把任务拆成 N 份简报。成功返回 [{name, brief}]，失败返回 null。
@@ -125,8 +127,9 @@ function parseStructuredOutput(raw) {
   throw new Error('输出中没有可解析的 JSON 对象');
 }
 
-function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, timeoutMs = 300000 }) {
+function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, signal, timeoutMs = 300000 }) {
   return new Promise(resolve => {
+    if (signal && signal.aborted) return resolve({ ok: false, cancelled: true, error: 'Mission 已停止', threadId: threadId || null });
     fs.mkdirSync(missionDir, { recursive: true });
     const stamp = kind + '-' + Date.now().toString(36);
     const promptPath = path.join(missionDir, stamp + '.prompt.md');
@@ -152,6 +155,19 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     let buffer = '';
     let foundThreadId = threadId || null;
     let stderr = '';
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      running.delete(child);
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', abort);
+      resolve(value);
+    };
+    const abort = () => {
+      finish({ ok: false, cancelled: true, error: 'Mission 已停止', threadId: foundThreadId });
+      stopChild(child);
+    };
     child.stdout.on('data', data => {
       buffer += data.toString();
       const lines = buffer.split(/\r?\n/);
@@ -161,23 +177,29 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
       }
     });
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4000); });
-    const timer = setTimeout(() => stopChild(child), timeoutMs);
+    const timer = setTimeout(() => {
+      finish({ ok: false, error: '主管请求超时', threadId: foundThreadId });
+      stopChild(child);
+    }, timeoutMs);
+    if (signal) {
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    }
     child.on('exit', code => {
-      running.delete(child);
-      clearTimeout(timer);
-      if (code !== 0) return resolve({ ok: false, error: stderr.trim() || ('Codex exit ' + code), threadId: foundThreadId });
+      if (settled) return;
+      if (code !== 0) return finish({ ok: false, error: stderr.trim() || ('Codex exit ' + code), threadId: foundThreadId });
       try {
         const value = parseStructuredOutput(fs.readFileSync(outPath, 'utf8'));
-        return resolve({ ok: true, value, threadId: foundThreadId, outputPath: outPath });
+        return finish({ ok: true, value, threadId: foundThreadId, outputPath: outPath });
       } catch (error) {
-        return resolve({ ok: false, error: '结构化输出解析失败: ' + error.message, threadId: foundThreadId });
+        return finish({ ok: false, error: '结构化输出解析失败: ' + error.message, threadId: foundThreadId });
       }
     });
-    child.on('error', error => { running.delete(child); clearTimeout(timer); resolve({ ok: false, error: error.message, threadId: foundThreadId }); });
+    child.on('error', error => finish({ ok: false, error: error.message, threadId: foundThreadId }));
   });
 }
 
-function planMission({ projectDir, missionDir, objective, participants, supervisorModel, threadId }) {
+function planMission({ projectDir, missionDir, objective, participants, supervisorModel, threadId, signal }) {
   const roster = participants.map(item => ({ petId: item.petId, name: item.name, model: item.model || null, fallbackModel: item.fallbackModel || null }));
   const prompt = [
     '# 角色', '你是 Pet Office 主管 Agent，负责生成可执行且无环的任务依赖计划。',
@@ -190,10 +212,10 @@ function planMission({ projectDir, missionDir, objective, participants, supervis
     '- dependsOn 只能引用本计划中其他任务 id，禁止循环依赖。',
     '- 至少一个 required=true 的终态交付任务。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'plan', prompt, schema: PLAN_SCHEMA, model: supervisorModel, threadId });
+  return runStructured({ projectDir, missionDir, kind: 'plan', prompt, schema: PLAN_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
-function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, threadId }) {
+function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, threadId, signal }) {
   const reports = tasks.map(task => ({
     taskId: task.id, title: task.title, status: task.status, attempts: task.attempts,
     assigneePetId: task.assigneePetId, model: task.model, report: task.report || null,
@@ -207,17 +229,17 @@ function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, t
     '- 成功且充分：accept。', '- 可通过修改简报再次尝试：retry。', '- 需要换已确认参与者：reassign。',
     '- 不可恢复：fail。', '- 非必需且无需继续：skip。', '- 每个 taskId 必须且只能出现一次。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId });
+  return runStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
-function finalReview({ projectDir, missionDir, mission, supervisorModel, threadId }) {
+function finalReview({ projectDir, missionDir, mission, supervisorModel, threadId, signal }) {
   const tasks = (mission.tasks || []).map(task => ({ id: task.id, title: task.title, status: task.status, report: task.report || null, review: task.review || null, changes: task.changeSet ? task.changeSet.changes : [] }));
   const prompt = [
     '# 任务', '对整个 Mission 做最终复核。不要拼接工作者原文，要判断目标是否实现、验证是否可信、剩余风险是什么。',
     '# Mission 目标', mission.objective, '# 节点结果', JSON.stringify(tasks, null, 2),
     '# 判定', '全部必需交付可用为 pass；存在可用成果但有非致命缺失为 partial；没有可用成果或关键验证失败为 fail。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId });
+  return runStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
 function shutdown() {

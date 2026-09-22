@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { workspacePath } = require('./path-safety');
 
 function hydrateProject(project = {}) {
   const now = Date.now();
@@ -21,14 +22,14 @@ function isPathInside(parent, candidate) {
 
 function clearProjectInbox(projectPath) {
   const projectRoot = path.resolve(projectPath);
-  const inboxPath = path.resolve(projectRoot, 'inbox');
+  const inboxPath = workspacePath(projectRoot, 'inbox');
   if (!isPathInside(projectRoot, inboxPath) || path.basename(inboxPath).toLowerCase() !== 'inbox') throw new Error('附件目录校验失败');
   if (!fs.existsSync(inboxPath)) return { count: 0, bytes: 0, inboxPath };
   const entries = fs.readdirSync(inboxPath, { withFileTypes: true });
   let count = 0;
   let bytes = 0;
   for (const entry of entries) {
-    const target = path.resolve(inboxPath, entry.name);
+    const target = workspacePath(projectRoot, path.join('inbox', entry.name));
     if (!isPathInside(inboxPath, target)) throw new Error('附件路径越界');
     try {
       const stat = fs.lstatSync(target);

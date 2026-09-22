@@ -523,7 +523,8 @@ class CodexSessionMonitor {
 
   _emitIfChanged() {
     const payload = { tasks: this.snapshot(), monitor: this.health() };
-    const signature = JSON.stringify(payload);
+    // Scan timestamps are diagnostic metadata, not a change to task contents.
+    const signature = JSON.stringify({ tasks: payload.tasks, monitor: { ok: payload.monitor.ok, error: payload.monitor.error } });
     if (signature === this.lastSnapshotSignature) return;
     this.lastSnapshotSignature = signature;
     try { this.onChange(payload); } catch (error) { this.log('session monitor callback failed: ' + error.message); }

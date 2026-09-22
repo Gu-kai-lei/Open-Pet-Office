@@ -21,6 +21,7 @@ const files = [
   'src/model-capabilities.js',
   'src/recommender.js',
   'src/project-service.js',
+  'src/path-safety.js',
   'src/release-manager.js',
   'src/fullscreen-probe.js',
   'src/link-utils.js',
@@ -42,6 +43,7 @@ const files = [
   'scripts/v0131-test.js',
   'scripts/v0132-test.js',
   'scripts/v0133-test.js',
+  'scripts/reliability-test.js',
 ];
 
 let failed = false;

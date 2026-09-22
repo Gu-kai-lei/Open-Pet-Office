@@ -43,6 +43,7 @@ class MissionStore {
   constructor({ runtimeRoot, log = () => {} }) {
     this.runtimeRoot = runtimeRoot;
     this.log = log;
+    this.savedPlans = new Map();
   }
 
   projectRoot(projectPath) { return path.join(projectPath, '.pet-office'); }
@@ -80,7 +81,20 @@ class MissionStore {
       }
     } catch {}
     atomicJson(file, sanitizeValue(mission));
-    if (mission.plan) atomicJson(path.join(dir, 'plan.json'), sanitizeValue(mission.plan));
+    if (mission.plan) {
+      const plan = sanitizeValue({
+        ...mission.plan,
+        tasks: (mission.plan.tasks || []).map(task => Object.fromEntries([
+          'id', 'title', 'brief', 'assigneePetId', 'assigneeName', 'model', 'fallbackAssignee', 'fallbackModel',
+          'dependsOn', 'mode', 'fileScopes', 'deliverables', 'validation', 'required', 'wave',
+        ].filter(key => Object.prototype.hasOwnProperty.call(task, key)).map(key => [key, task[key]]))),
+      });
+      const body = JSON.stringify(plan);
+      if (this.savedPlans.get(file) !== body) {
+        atomicJson(path.join(dir, 'plan.json'), plan);
+        this.savedPlans.set(file, body);
+      }
+    }
     return mission;
   }
 
