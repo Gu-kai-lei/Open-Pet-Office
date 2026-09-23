@@ -12,6 +12,7 @@ const { CodexSessionMonitor, _internals: { redact } } = require('../src/session-
 const { ingestFilesAsync, ingestFiles } = require('../src/inbox');
 const { clearProjectInbox } = require('../src/project-service');
 const { normalizeDroppedLinks } = require('../src/link-utils');
+const { _internals: { failureBackoffMs } } = require('../src/quota');
 const repo = path.resolve(__dirname, '..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-office-reliability-'));
 const read = file => fs.readFileSync(path.join(repo, file), 'utf8');
@@ -54,6 +55,12 @@ function clientFixture() {
 }
 
 (async () => {
+  await test('quota failures use bounded exponential backoff', async () => {
+    assert.equal(failureBackoffMs(1), 30000);
+    assert.equal(failureBackoffMs(2), 60000);
+    assert.equal(failureBackoffMs(4), 240000);
+    assert.equal(failureBackoffMs(20), 1800000);
+  });
   await test('cancel during planning cannot restore confirmation', async () => {
     const d = deferred(); let signal;
     const m = fixture({ planMission: args => { signal = args.signal; return d.promise; } });

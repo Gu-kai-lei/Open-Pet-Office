@@ -622,7 +622,7 @@ function onChatEvent(event) {
     }
     chatStreams.set(event.taskId, '');
     setStatus(pet, 'working');
-    bubble(pet.id, '正在思考…', 12000);
+    bubble(pet.id, event.recoveredArchivedThreadId ? '旧会话已归档，已切换到新会话继续…' : '正在思考…', 12000, event.recoveredArchivedThreadId ? 'attention' : undefined);
     updateLiveTaskCard();
     return;
   }

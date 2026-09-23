@@ -49,6 +49,32 @@ function fixture(saved = true) {
   assert.equal((await failed.run()).ok, false);
   assert.deepEqual(failed.calls, []);
   assert.equal(failed.context.startingChats.size, 0);
+  const archivedOnResume = fixture();
+  archivedOnResume.context.appServer.resumeThread = async () => { archivedOnResume.calls.push('resume'); throw new Error('session saved-thread is archived. Run `codex unarchive saved-thread` to unarchive it first.'); };
+  const archivedResumeResult = await archivedOnResume.run();
+  assert.equal(archivedResumeResult.ok, true);
+  assert.equal(archivedResumeResult.threadId, 'new-thread');
+  assert.deepEqual(archivedOnResume.calls, ['resume', 'unsubscribe', 'create', 'name', 'turn']);
+  assert.equal(archivedOnResume.context.petThreads.get('p1:supervisor'), 'new-thread');
+  const archivedOnTurn = fixture();
+  let oldTurn = true;
+  archivedOnTurn.context.appServer.startTurn = async ({ threadId }) => {
+    archivedOnTurn.calls.push('turn:' + threadId);
+    if (oldTurn) { oldTurn = false; throw new Error('session saved-thread is archived'); }
+    return { turnId: 'turn' };
+  };
+  const archivedTurnResult = await archivedOnTurn.run();
+  assert.equal(archivedTurnResult.ok, true);
+  assert.equal(archivedTurnResult.threadId, 'new-thread');
+  assert.deepEqual(archivedOnTurn.calls, ['resume', 'turn:saved-thread', 'unsubscribe', 'create', 'name', 'turn:new-thread']);
+  assert.equal(archivedOnTurn.context.liveChats.has('saved-thread'), false);
+  assert.equal(archivedOnTurn.context.liveChats.has('new-thread'), true);
+  const limited = fixture(false);
+  limited.context.appServer.startTurn = async () => { throw new Error('exceeded retry limit, last status: 429 Too Many Requests'); };
+  const limitedResult = await limited.run();
+  assert.equal(limitedResult.ok, false);
+  assert.equal(limitedResult.code, 'RATE_LIMITED');
+  assert.match(limitedResult.error, /429/);
   const occupied = fixture();
   occupied.context.appServer.resumeThread = async () => { occupied.calls.push('resume'); throw new Error('thread saved-thread already has an active writer'); };
   const occupiedResult = await occupied.run();
@@ -77,5 +103,5 @@ function fixture(saved = true) {
   assert.equal((await sending).ok, false);
   assert(cancelling.calls.includes('interrupt'));
   assert.equal(cancelling.context.liveChats.size, 0);
-  console.log('PASS: restore, persist, duplicate send, explicit ownership conflict, failed resume, concurrent creation');
+  console.log('PASS: restore, archived recovery, rate-limit handling, duplicate send, ownership conflict, concurrent creation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

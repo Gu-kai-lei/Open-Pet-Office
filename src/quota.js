@@ -2,11 +2,17 @@
 const fs = require('fs');
 const { ADMIN_TOKEN_FILE, PROXY_BASE, log } = require('./config');
 
-let cache = { at: 0, lastSuccessAt: 0, ok: false, stale: false, reports: [], error: null };
+let cache = { at: 0, lastSuccessAt: 0, ok: false, stale: false, reports: [], error: null, retryAt: 0 };
+let failureCount = 0;
+
+function failureBackoffMs(count) {
+  return Math.min(30 * 60 * 1000, 30 * 1000 * (2 ** Math.max(0, Math.min(6, count - 1))));
+}
 
 async function fetchQuotas(force = false) {
   const now = Date.now();
   if (!force && cache.ok && now - cache.at < 45000) return cache;
+  if (!force && cache.retryAt && now < cache.retryAt) return cache;
   let token = '';
   try {
     token = fs.readFileSync(ADMIN_TOKEN_FILE, 'utf8').trim();
@@ -18,6 +24,7 @@ async function fetchQuotas(force = false) {
       stale: !!(cache.reports && cache.reports.length),
       reports: cache.reports || [],
       error: '无法读取管理令牌: ' + e.message,
+      retryAt: now + failureBackoffMs(++failureCount),
     };
     return cache;
   }
@@ -35,7 +42,8 @@ async function fetchQuotas(force = false) {
     }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    cache = { at: now, lastSuccessAt: now, ok: true, stale: false, error: null, reports: normalize(data.reports || []) };
+    failureCount = 0;
+    cache = { at: now, lastSuccessAt: now, ok: true, stale: false, error: null, reports: normalize(data.reports || []), retryAt: 0 };
   } catch (e) {
     const message = e && e.name === 'AbortError' ? '请求超时' : e.message;
     cache = {
@@ -45,6 +53,7 @@ async function fetchQuotas(force = false) {
       stale: !!(cache.reports && cache.reports.length),
       reports: cache.reports || [],
       error: message,
+      retryAt: now + failureBackoffMs(++failureCount),
     };
     log('quota fetch failed: ' + message);
   }
@@ -70,4 +79,4 @@ function normalize(reports) {
   });
 }
 
-module.exports = { fetchQuotas };
+module.exports = { fetchQuotas, _internals: { failureBackoffMs } };

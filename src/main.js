@@ -729,43 +729,66 @@ async function startPetChat({ taskText, projectId, petId, model }) {
   clearTimeout(appServerIdleTimer);
 
   let threadId = existingThread;
+  let recoveredArchivedThreadId = null;
+  const archivedThreadError = error => /(?:session|thread).*\barchived\b|\bcodex\s+unarchive\b/i.test(String(error && error.message));
+  const rateLimitError = error => /\b429\b|too many requests|exceeded retry limit|rate.?limit/i.test(String(error && error.message));
+  const forgetCurrentThread = async staleThreadId => {
+    if (!staleThreadId) return;
+    loadedThreads.delete(staleThreadId);
+    if (petThreads.get(key) === staleThreadId) petThreads.delete(key);
+    state.conversations = Object.fromEntries(petThreads);
+    cfg.saveState(state);
+    try { await appServer.unsubscribeThread({ threadId: staleThreadId }); }
+    catch (error) { cfg.log('stale thread unsubscribe failed: ' + error.message); }
+  };
+  const createFreshThread = async () => {
+    const thread = await appServer.startThread({ cwd: proj.path, model: model || pet.model || null, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
+    const freshThreadId = thread.threadId;
+    if (!freshThreadId) throw new Error('Codex App Server 未返回 threadId');
+    petThreads.set(key, freshThreadId);
+    loadedThreads.add(freshThreadId);
+    state.conversations = Object.fromEntries(petThreads);
+    cfg.saveState(state);
+    proj.threadIds = Array.isArray(proj.threadIds) ? proj.threadIds : [];
+    if (!proj.threadIds.includes(freshThreadId)) proj.threadIds.push(freshThreadId);
+    proj.threadIds = proj.threadIds.slice(-30);
+    proj.updatedAt = Date.now();
+    try {
+      await appServer.setThreadName({ threadId: freshThreadId, name: text.replace(/\s+/g, ' ').slice(0, 60) });
+    } catch (error) {
+      cfg.log('thread name failed: ' + error.message);
+    }
+    return freshThreadId;
+  };
   try {
     if (threadId && !loadedThreads.has(threadId)) {
       try {
         await appServer.resumeThread({ threadId, cwd: proj.path, model: model || pet.model || null });
         loadedThreads.add(threadId);
       } catch (error) {
+        if (archivedThreadError(error)) {
+          cfg.log('saved thread is archived; creating a replacement: ' + threadId);
+          recoveredArchivedThreadId = threadId;
+          await forgetCurrentThread(threadId);
+          threadId = null;
+        } else {
         // Codex Desktop and Pet Office cannot both be the writer of one thread.
         // Never silently fork here: the user must explicitly choose a new
         // conversation so context ownership remains understandable.
-        if (!/active writer|already has .*writer/i.test(String(error && error.message))) throw error;
-        cfg.log('saved thread is owned by Codex Desktop: ' + threadId);
-        scheduleAppServerIdleStop();
-        return {
-          ok: false,
-          code: 'THREAD_OWNED_BY_CODEX',
-          threadId,
-          error: '这个会话当前由 Codex Desktop 控制。请在 Codex 中继续，或选择“新建会话”后再发送。',
-        };
+          if (!/active writer|already has .*writer/i.test(String(error && error.message))) throw error;
+          cfg.log('saved thread is owned by Codex Desktop: ' + threadId);
+          scheduleAppServerIdleStop();
+          return {
+            ok: false,
+            code: 'THREAD_OWNED_BY_CODEX',
+            threadId,
+            error: '这个会话当前由 Codex Desktop 控制。请在 Codex 中继续，或选择“新建会话”后再发送。',
+          };
+        }
       }
     }
     if (!threadId) {
-      const thread = await appServer.startThread({ cwd: proj.path, model: model || pet.model || null, sandbox: 'workspace-write', approvalPolicy: 'on-request' });
-      threadId = thread.threadId;
-      if (!threadId) throw new Error('Codex App Server 未返回 threadId');
-      petThreads.set(key, threadId);
-      loadedThreads.add(threadId);
-      state.conversations = Object.fromEntries(petThreads);
-      cfg.saveState(state);
-      proj.threadIds = Array.isArray(proj.threadIds) ? proj.threadIds : [];
-      if (!proj.threadIds.includes(threadId)) proj.threadIds.push(threadId);
-      proj.threadIds = proj.threadIds.slice(-30);
-      proj.updatedAt = Date.now();
-      try {
-        await appServer.setThreadName({ threadId, name: text.replace(/\s+/g, ' ').slice(0, 60) });
-      } catch (error) {
-        cfg.log('thread name failed: ' + error.message);
-      }
+      threadId = await createFreshThread();
     }
 
     const task = {
@@ -788,8 +811,27 @@ async function startPetChat({ taskText, projectId, petId, model }) {
     const chat = { task, threadId, turnId: null, output: '', pendingDelta: '', flushTimer: null, startedAt: Date.now() };
     liveChats.set(threadId, chat);
     persistStandaloneTask(task);
-    send('chat:event', { type: 'started', taskId: task.id, petId: pet.id, threadId, text });
-    const result = await appServer.startTurn({ threadId, text, model: task.model });
+    let result;
+    try {
+      result = await appServer.startTurn({ threadId, text, model: task.model });
+    } catch (error) {
+      if (!archivedThreadError(error) || threadId !== existingThread) throw error;
+      const staleThreadId = threadId;
+      recoveredArchivedThreadId = staleThreadId;
+      liveChats.delete(staleThreadId);
+      await forgetCurrentThread(staleThreadId);
+      threadId = await createFreshThread();
+      task.threadId = threadId;
+      chat.threadId = threadId;
+      liveChats.set(threadId, chat);
+      persistStandaloneTask(task);
+      cfg.log('archived thread replaced before turn start: ' + staleThreadId + ' -> ' + threadId);
+      result = await appServer.startTurn({ threadId, text, model: task.model });
+    }
+    send('chat:event', {
+      type: 'started', taskId: task.id, petId: pet.id, threadId, text,
+      recoveredArchivedThreadId,
+    });
     chat.turnId = (result && (result.turnId || (result.turn && result.turn.id))) || null;
     if (chat.cancelRequested) {
       if (chat.turnId) await appServer.interruptTurn({ threadId, turnId: chat.turnId });
@@ -800,13 +842,16 @@ async function startPetChat({ taskText, projectId, petId, model }) {
     cfg.saveState(state);
     return { ok: true, taskId: task.id, threadId, turnId: chat.turnId };
   } catch (error) {
+    const message = rateLimitError(error)
+      ? '请求过于频繁，服务端已临时限流（429）。请稍候再发送；Pet Office 不会自动重复提交这条消息。'
+      : error.message;
     const chat = threadId && liveChats.get(threadId);
-    if (chat) finishChat(chat, 'failed', error.message);
+    if (chat) finishChat(chat, 'failed', message);
     else {
-      send('chat:event', { type: 'failed', petId: pet.id, threadId: threadId || null, error: error.message });
+      send('chat:event', { type: 'failed', petId: pet.id, threadId: threadId || null, error: message });
       scheduleAppServerIdleStop();
     }
-    return { ok: false, error: error.message };
+    return { ok: false, code: rateLimitError(error) ? 'RATE_LIMITED' : undefined, error: message };
   } finally {
     startingChats.delete(key);
   }
