@@ -44,6 +44,7 @@ const files = [
   'scripts/v0132-test.js',
   'scripts/v0133-test.js',
   'scripts/reliability-test.js',
+  'scripts/workspace-ui-test.js',
 ];
 
 let failed = false;

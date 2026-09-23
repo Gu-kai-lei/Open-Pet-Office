@@ -31,6 +31,22 @@ const activitySurface = { state: 'closed', epoch: 0, timer: null, animation: nul
 const composerSurface = { epoch: 0, timer: null, animation: null };
 const pets = new Map();
 const panelTabs = new Map();
+let activityView = 'all';
+
+function uiIcon(name) {
+  const paths = {
+    overview: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+    work: '<path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3Z"/>',
+    team: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 6"/>',
+    appearance: '<path d="M12 3a9 9 0 1 0 0 18c4 0 1-4 4-5s5-1 5-5a9 9 0 0 0-9-8Z"/><path d="M7 10h.01M10 6h.01M16 7h.01M6 15h.01"/>',
+    settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>',
+    chat: '<path d="M21 11a8 8 0 0 1-8 8H6l-4 3V11a9 9 0 0 1 19 0Z"/><path d="M7 9h9M7 13h6"/>',
+    capture: '<rect x="3" y="5" width="18" height="15" rx="3"/><path d="m8 5 2-3h4l2 3"/><circle cx="12" cy="12" r="3"/>',
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+  };
+  return '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (paths[name] || paths.overview) + '</svg>';
+}
 const temporarySummons = new Set();
 const bubbleTimers = {};
 const chatStreams = new Map();
@@ -1420,7 +1436,7 @@ function activityTaskHtml(task) {
   const label = STATUS_TEXT[status] || task.status || '待命';
   const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'mission' ? 'Mission' : (task.source === 'delegation' ? '分工' : '桌宠会话'));
   return '<article class="activity-task" data-task-status="' + esc(task.status) + '"><span class="status-dot ' + status + '"></span><div class="activity-task-copy"><div><b>' + esc(task.petName || (pets.get(task.petId) && pets.get(task.petId).name) || task.petId || 'Agent') + '</b><small class="task-source">' + esc(source) + '</small><small>' + esc(modelName(task.model)) + '</small></div><p>' + esc(short(task.brief, 110)) + '</p>' + (task.progress ? '<p class="activity-progress"><span>' + esc(progressStageLabel(task.progressStage)) + '</span>' + esc(short(task.progress, 150)) + '</p>' : '') + '</div>' +
-    '<div class="activity-task-side"><span>' + esc(label) + '</span><button class="text-btn pin-task' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? ' active' : '') + '" data-pin-task="task:' + esc(task.id) + '">' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? '已固定' : '固定') + '</button>' + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</div></article>';
+    '<div class="activity-task-side"><span>' + esc(label) + '</span><button class="text-btn pin-task' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? ' active' : '') + '" data-pin-task="task:' + esc(task.id) + '">' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? '已固定' : '固定') + '</button>' + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + (task.source === 'pet-chat' && ['queued', 'running', 'waiting_input'].includes(task.status) ? '<button class="text-btn cancel-task" data-activity-cancel="' + esc(task.id) + '">取消</button>' : '') + '</div></article>';
 }
 
 function missionStatusClass(status) {
@@ -1474,6 +1490,14 @@ function activitySectionHtml(title, items, collapsed = false) {
   return '<section class="activity-list"><div class="section-title">' + esc(title) + '<span>' + items.length + '</span></div>' + content + '</section>';
 }
 
+function matchesActivityView(item, mission = false) {
+  if (activityView === 'all') return true;
+  const status = item.status;
+  if (activityView === 'attention') return (mission ? ['awaiting_confirmation', 'needs_input', 'interrupted', 'failed'] : ['waiting_input', 'failed']).includes(status);
+  if (activityView === 'active') return (mission ? ['planning', 'running', 'reviewing'] : ['queued', 'running']).includes(status);
+  return (mission ? ['completed', 'partially_succeeded', 'cancelled'] : ['done', 'completed', 'cancelled', 'capped', 'unknown']).includes(status);
+}
+
 function refreshActivityContents() {
   const panel = $('#activity');
   const scroll = panel.querySelector('.activity-scroll');
@@ -1484,23 +1508,25 @@ function refreshActivityContents() {
   const focusedAnswer = panel.contains(document.activeElement) && document.activeElement.dataset
     ? document.activeElement.dataset.answer
     : null;
-  const filteredTasks = tasks.filter(matchesProjectFilter);
-  const filteredMissions = missions.filter(matchesProjectFilter);
+  const filteredTasks = tasks.filter(matchesProjectFilter).filter(item => matchesActivityView(item));
+  const filteredMissions = missions.filter(matchesProjectFilter).filter(item => matchesActivityView(item, true));
   const ordered = [...filteredTasks].sort((a, b) => activityPriority(a.status) - activityPriority(b.status) || (b.updatedAt || b.finishedAt || b.startedAt || 0) - (a.updatedAt || a.finishedAt || a.startedAt || 0));
   const waiting = ordered.filter(task => task.status === 'waiting_input').slice(0, 8);
   const active = ordered.filter(task => ['running', 'queued'].includes(task.status)).slice(0, 12);
-  const recent = ordered.filter(task => !['waiting_input', 'running', 'queued'].includes(task.status)).slice(0, 8);
-  const activeCount = waiting.length + active.length;
+  const failed = ordered.filter(task => task.status === 'failed').slice(0, 8);
+  const recent = ordered.filter(task => !['waiting_input', 'running', 'queued', 'failed'].includes(task.status)).slice(0, 8);
+  const activeCount = filteredTasks.filter(task => ['running', 'queued'].includes(task.status)).length
+    + filteredMissions.filter(mission => ['planning', 'running', 'reviewing'].includes(mission.status)).length;
   const monitor = S.desktopMonitor || { ok: true };
   const monitorBanner = monitor.ok ? '' : '<div class="monitor-warning"><b>Codex Desktop 状态暂时不可用</b><span>' + esc(monitor.error || '已继续尝试重连') + '</span></div>';
-  const empty = !filteredMissions.length && !interactions.length && !waiting.length && !active.length && !recent.length
-    ? '<section class="activity-list"><div class="empty-state">' + (monitor.ok ? '当前没有进行中的任务' : '暂时无法确认 Codex Desktop 任务状态') + '</div></section>'
+  const empty = !filteredMissions.length && !interactions.length && !waiting.length && !active.length && !failed.length && !recent.length
+    ? '<section class="activity-list"><div class="empty-state"><span class="empty-symbol">✓</span><b>' + (monitor.ok ? '这里暂时没有任务' : '任务状态暂不可用') + '</b><span>可以切换筛选，或开始一条新对话</span></div></section>'
     : '';
-  panel.innerHTML = '<header class="activity-head"><div><b>任务动态</b><small>' + (activeCount ? activeCount + ' 项正在进行' : '所有 Agent 的最近活动') + '</small></div><label class="activity-filter"><span>项目</span><select id="activity-project-filter">' + projectFilterOptions() + '</select></label><button class="close-btn" id="activity-close" aria-label="收起">⌄</button></header>' +
+  panel.innerHTML = '<header class="activity-head"><div><b>任务中心</b><small>' + (activeCount ? activeCount + ' 项正在进行' : '进度、分工与待办，一目了然') + '</small></div><label class="activity-filter"><span>项目</span><select id="activity-project-filter">' + projectFilterOptions() + '</select></label><button class="close-btn" id="activity-close" aria-label="收起">⌄</button></header>' +
+    '<nav class="activity-views" aria-label="任务状态">' + [['all', '全部'], ['attention', '待处理 / 失败'], ['active', '进行中'], ['history', '已结束']].map(([key, label]) => '<button data-activity-view="' + key + '" aria-pressed="' + (activityView === key) + '">' + label + '</button>').join('') + '</nav>' +
     '<div class="activity-scroll">' + monitorBanner +
-    missionSectionHtml(filteredMissions) +
     (interactions.length ? '<section class="interaction-list"><div class="section-title">需要你处理<span>' + interactions.length + '</span></div>' + interactions.map(interactionCardHtml).join('') + '</section>' : '') +
-    activitySectionHtml('等待处理', waiting) + activitySectionHtml('进行中', active) + activitySectionHtml('最近动态', recent, true) + empty + '</div>';
+    activitySectionHtml('等待处理', waiting) + activitySectionHtml('执行失败', failed) + missionSectionHtml(filteredMissions) + activitySectionHtml('进行中', active) + activitySectionHtml('最近动态', recent, activityView === 'all') + empty + '</div>';
   bindActivity();
   panel.querySelectorAll('[data-answer]').forEach(control => {
     if (answerDrafts.has(control.dataset.answer)) control.value = answerDrafts.get(control.dataset.answer);
@@ -1536,11 +1562,11 @@ function cancelActivityMotion() {
 function activityTargetRect() {
   const panel = $('#activity');
   const boss = pets.get('supervisor');
-  if (!boss) return { left: 12, top: 12, width: Math.min(430, innerWidth - 24), height: Math.min(500, innerHeight - 24) };
+  if (!boss) return { left: 12, top: 12, width: Math.min(520, innerWidth - 24), height: Math.min(660, innerHeight - 24) };
   const quickbar = boss.el.querySelector('.quickbar').getBoundingClientRect();
-  panel.style.width = Math.min(430, innerWidth - 24) + 'px';
+  panel.style.width = Math.min(520, innerWidth - 24) + 'px';
   panel.style.height = 'auto';
-  const height = Math.min(panel.scrollHeight, 500, Math.round(innerHeight * .62));
+  const height = Math.min(panel.scrollHeight, 660, Math.round(innerHeight * .78));
   const width = panel.offsetWidth;
   const left = Math.max(12, Math.min(innerWidth - width - 12, Math.round(quickbar.left + quickbar.width / 2 - width / 2)));
   const below = quickbar.bottom + 8;
@@ -1566,7 +1592,7 @@ function openActivity() {
   openPanelFor = null;
   panel.className = 'ui pet-activity';
   panel.setAttribute?.('role', 'dialog');
-  panel.setAttribute?.('aria-label', '任务动态');
+  panel.setAttribute?.('aria-label', '任务中心');
   panel.classList.remove('hidden', 'ready');
   const boss = pets.get('supervisor');
   if (boss) boss.el.classList.add('activity-open');
@@ -1640,6 +1666,12 @@ function closeActivity(immediate = false) {
 
 function bindActivity() {
   const panel = $('#activity');
+  panel.querySelectorAll('[data-activity-cancel]').forEach(button => {
+    button.onclick = () => window.petOffice.cancelTask(button.dataset.activityCancel);
+  });
+  panel.querySelectorAll('[data-activity-view]').forEach(button => {
+    button.onclick = () => { activityView = button.dataset.activityView; refreshActivityContents(); };
+  });
   panel.querySelector('#activity-close').onclick = () => {
     closeActivity();
   };
@@ -1699,18 +1731,33 @@ function openPanel(petId, requestedTab) {
   $('#ctxmenu').classList.add('hidden');
   const panel = $('#panel');
   const tabs = pet.role === 'supervisor'
-    ? [['overview', '概览'], ['work', '工作'], ['team', '团队'], ['appearance', '形象'], ['settings', '设置']]
-    : [['overview', '概览'], ['work', '工作'], ['appearance', '形象'], ['settings', '设置']];
+    ? [['overview', '工作台'], ['work', '项目'], ['team', '团队'], ['appearance', '形象'], ['settings', '设置']]
+    : [['overview', '工作台'], ['work', '任务'], ['appearance', '形象'], ['settings', '设置']];
   const allowed = tabs.map(tab => tab[0]);
   const tab = allowed.includes(requestedTab) ? requestedTab : (panelTabs.get(petId) || 'overview');
   panelTabs.set(petId, tab);
 
-  let html = '<header class="panel-head"><div class="mini-avatar ' + pet.role + '"><span>›_</span></div><div><b>' + esc(pet.name) + '</b><small>' + (pet.role === 'supervisor' ? '主管 Agent' : '工作者 Agent') + '</small></div><button class="close-btn" id="p-close" aria-label="关闭">×</button></header>';
-  html += '<nav class="panel-tabs">' + tabs.map(item => '<button data-panel-tab="' + item[0] + '" class="' + (tab === item[0] ? 'active' : '') + '">' + item[1] + '</button>').join('') + '</nav>';
-  html += '<div class="panel-page">' + panelPage(pet, tab) + '</div>';
+  const samePage = panel.dataset.pet === petId && panel.dataset.page === tab;
+  const previousScroll = samePage ? (panel.querySelector('.panel-page')?.scrollTop || 0) : 0;
+  const disclosures = new Map(samePage ? [...panel.querySelectorAll('details[data-disclosure]')].map(el => [el.dataset.disclosure, el.open]) : []);
+  const editingName = samePage && document.activeElement?.id === 'p-name' ? { value: document.activeElement.value, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+  const titles = { overview: ['工作台', '让小伙伴接手下一件事'], work: [pet.role === 'supervisor' ? '项目与会话' : '任务记录', '工作区、上下文与执行记录'], team: ['协作团队', '不同专长，一起完成'], appearance: ['桌宠形象', '给你的搭档一点个性'], settings: ['偏好设置', '让办公室适合你的节奏'] };
+  const title = titles[tab];
+  const project = currentProject();
+  let html = '<header class="panel-head"><div class="mini-avatar ' + pet.role + '"><span>›_</span></div><div><b>' + esc(pet.name) + '<span class="office-wordmark">PET OFFICE</span></b><small>' + (pet.role === 'supervisor' ? '主管 · 你的桌面搭档' : 'Agent · 协作成员') + '</small></div><button class="close-btn" id="p-close" aria-label="关闭">×</button></header>';
+  html += '<div class="workspace-layout"><aside class="workspace-sidebar"><nav class="panel-tabs" aria-label="工作台导航">' + tabs.map(item => '<button data-panel-tab="' + item[0] + '" aria-current="' + (tab === item[0] ? 'page' : 'false') + '" class="' + (tab === item[0] ? 'active' : '') + '">' + uiIcon(item[0]) + '<span>' + item[1] + '</span></button>').join('') + '</nav><button class="workspace-tasks" id="p-task-hub">' + uiIcon('activity') + '<span>任务中心</span></button><div class="sidebar-project"><span>当前工作区</span><b>' + esc(project ? project.name : '尚未选择') + '</b></div></aside>';
+  html += '<div class="panel-page"><div class="page-heading"><span class="eyebrow">YOUR LITTLE OFFICE</span><h1>' + title[0] + '</h1><p>' + title[1] + '</p></div>' + panelPage(pet, tab) + '</div></div>';
   panel.innerHTML = html;
+  panel.dataset.pet = petId; panel.dataset.page = tab;
+  organizeSettings(panel);
+  for (const el of panel.querySelectorAll('details[data-disclosure]')) if (disclosures.has(el.dataset.disclosure)) el.open = disclosures.get(el.dataset.disclosure);
+  panel.querySelector('.panel-page').scrollTop = previousScroll;
+  if (editingName && panel.querySelector('#p-name')) {
+    const input = panel.querySelector('#p-name');
+    input.value = editingName.value; input.focus({ preventScroll: true }); input.setSelectionRange(editingName.start, editingName.end);
+  }
   panel.setAttribute?.('role', 'dialog');
-  panel.setAttribute?.('aria-label', pet.name + ' 设置');
+  panel.setAttribute?.('aria-label', pet.name + ' 工作台');
   panel.classList.remove('hidden');
   positionPanel(panel, pet.el);
   bindPanel(petId);
@@ -1740,6 +1787,33 @@ function openPanel(petId, requestedTab) {
   }
 }
 
+function organizeSettings(panel) {
+  const list = panel.querySelector('.settings-list');
+  if (!list) return;
+  const rows = [...list.children];
+  const groups = [
+    ['appearance', '外观与阅读', '主题、字号和桌宠显示', ['s-theme', 's-compact', 's-reduced-motion', 's-pet-scale', 's-font-scale', 's-font-family']],
+    ['desktop', '桌面与通知', '显示器、全屏避让与提醒', ['s-display', 's-fullscreen', 's-notification']],
+    ['shortcuts', '快捷操作', '显示桌宠与截图提问', ['s-shortcut', 's-capture-shortcut']],
+    ['system', '启动与执行', '自启、更新与并行数量', ['s-autostart', 's-auto-update', 's-mp']],
+  ];
+  for (const [key, title, description, ids] of groups) {
+    const group = document.createElement('details');
+    group.className = 'settings-group';
+    group.dataset.disclosure = 'settings-' + key;
+    group.open = false;
+    group.innerHTML = '<summary><span><b>' + title + '</b><small>' + description + '</small></span><i>⌄</i></summary><div class="settings-group-body"></div>';
+    for (const row of rows) if (ids.some(id => row.querySelector('#' + id))) group.lastElementChild.appendChild(row);
+    list.appendChild(group);
+  }
+  const support = document.createElement('details');
+  support.className = 'settings-group';
+  support.dataset.disclosure = 'settings-support';
+  support.innerHTML = '<summary><span><b>连接与更新</b><small>服务诊断、版本与运行状态</small></span><i>⌄</i></summary><div class="settings-group-body"></div>';
+  for (const card of panel.querySelectorAll('.diagnostics-card, .release-card')) support.lastElementChild.appendChild(card);
+  list.appendChild(support);
+}
+
 function diagnosticsHtml() {
   if (!diagnosticsReport) {
     return '<div class="diagnostics-card"><div class="diagnostics-head"><b>连接诊断</b><button class="btn compact" id="p-diagnostics">检测</button></div><div class="diagnostics-loading">正在检查 Codex 与 OpenCodex…</div></div>';
@@ -1754,11 +1828,20 @@ function panelPage(pet, tab) {
   const myTasks = tasks.filter(task => task.petId === pet.id);
   const current = myTasks.find(task => ['queued', 'running', 'waiting_input'].includes(task.status));
   if (tab === 'overview') {
-    return '<div class="hero-status"><span class="status-dot ' + pet.status + '"></span><div><b>' + esc(STATUS_TEXT[pet.status] || '待命') + '</b><small>' + (current ? esc(short(current.brief, 72)) : '等待你的下一条消息') + '</small></div></div>' +
-      '<label class="field"><span>当前模型</span><select id="p-model">' + modelOptions(pet.model) + '</select></label>' +
-      capabilityBadges(pet.model) +
-      quotaBlock(pet.model) +
-      '<div class="overview-actions"><button class="btn primary overview-primary" id="p-newtask">✎ 继续对话</button><div class="overview-secondary"><button class="btn" id="p-fresh-chat">新会话</button><button class="btn" id="p-activity">任务动态</button></div><details class="utility-actions"><summary>更多操作</summary><div><button class="text-btn" id="p-opencodex">在 Codex 中打开</button><button class="text-btn danger-text" id="p-reset-chat">重置当前上下文</button></div></details></div>';
+    const project = currentProject();
+    const scope = pet.role === 'supervisor' ? tasks.filter(t => t.source !== 'mission') : myTasks;
+    const running = scope.filter(t => ['queued', 'running'].includes(t.status)).length + (pet.role === 'supervisor' ? missions.filter(m => ['planning', 'running', 'reviewing'].includes(m.status)).length : 0);
+    const relevantInteractions = interactions.filter(item => pet.role === 'supervisor' || scope.some(t => t.threadId && t.threadId === item.threadId));
+    const interactionThreads = new Set(relevantInteractions.map(item => item.threadId).filter(Boolean));
+    const attention = scope.filter(t => t.status === 'waiting_input' && !interactionThreads.has(t.threadId)).length + relevantInteractions.length + (pet.role === 'supervisor' ? missions.filter(m => ['awaiting_confirmation', 'needs_input', 'interrupted'].includes(m.status)).length : 0);
+    return '<div class="hero-status"><span class="status-dot ' + pet.status + '"></span><div><b>' + esc(STATUS_TEXT[pet.status] || '待命') + '</b><small>' + (current ? esc(short(current.brief, 72)) : '准备好了，今天从哪里开始？') + '</small></div><span class="hero-spark">✦</span></div>' +
+      '<div class="overview-actions"><button class="btn primary overview-primary" id="p-newtask">' + uiIcon('chat') + '<span><b>继续对话</b><small>延续当前上下文</small></span>' + uiIcon('arrow') + '</button><div class="overview-secondary"><button class="action-tile" id="p-delegate-task">' + uiIcon('team') + '<b>分工协作</b><small>由主管规划并行任务</small></button><button class="action-tile" id="p-capture">' + uiIcon('capture') + '<b>截图提问</b><small>框选屏幕，直接交流</small></button></div></div>' +
+      '<button class="workspace-summary" id="p-workspace"><span class="summary-icon">' + uiIcon('work') + '</span><span><small>当前项目</small><b>' + esc(project ? project.name : '选择一个工作区') + '</b></span>' + uiIcon('arrow') + '</button>' +
+      '<button class="task-summary" id="p-activity"><span>' + uiIcon('activity') + '任务中心</span><span><b>' + running + '</b> 进行中<i></i><b class="' + (attention ? 'attention-count' : '') + '">' + attention + '</b> 待处理</span>' + uiIcon('arrow') + '</button>' +
+      '<section class="model-card"><label class="field"><span>对话模型</span><select id="p-model">' + modelOptions(pet.model) + '</select></label>' + capabilityBadges(pet.model) +
+      '<details class="model-details" data-disclosure="quota"><summary>用量与额度</summary>' + quotaBlock(pet.model) + '</details></section>' +
+      '<details class="utility-actions" data-disclosure="conversation"><summary>会话管理</summary><div><button class="text-btn" id="p-fresh-chat">新建会话</button><button class="text-btn" id="p-opencodex">在 Codex 中打开</button><button class="text-btn danger-text" id="p-reset-chat">重置当前上下文</button></div></details>';
+
   }
   if (tab === 'work') {
     let content = '';
@@ -1947,7 +2030,7 @@ function positionPanel(panel, petElement) {
   const rect = petElement.getBoundingClientRect();
   const leftSide = rect.left - panel.offsetWidth - 16;
   const rightSide = rect.right + 16;
-  panel.style.left = Math.round(leftSide >= 12 ? leftSide : Math.min(rightSide, innerWidth - panel.offsetWidth - 12)) + 'px';
+  panel.style.left = Math.round(Math.max(12, leftSide >= 12 ? leftSide : Math.min(rightSide, innerWidth - panel.offsetWidth - 12))) + 'px';
   panel.style.top = Math.round(Math.max(12, Math.min(rect.top + rect.height / 2 - panel.offsetHeight / 2, innerHeight - panel.offsetHeight - 12))) + 'px';
 }
 
@@ -1999,7 +2082,14 @@ function bindPanel(petId) {
   });
 
   const newTask = panel.querySelector('#p-newtask');
-  if (newTask) newTask.onclick = () => openComposer(petId, delegationOn);
+  if (newTask) newTask.onclick = () => openComposer(petId, false);
+  const delegate = panel.querySelector('#p-delegate-task');
+  if (delegate) delegate.onclick = () => openComposer(petId, true);
+  const capture = panel.querySelector('#p-capture');
+  if (capture) capture.onclick = () => window.petOffice.startCapture(petId);
+  const workspace = panel.querySelector('#p-workspace');
+  if (workspace) workspace.onclick = () => openPanel('supervisor', 'work');
+  panel.querySelector('#p-task-hub').onclick = () => openActivity();
   const freshChat = panel.querySelector('#p-fresh-chat');
   if (freshChat) freshChat.onclick = () => startNewConversation(petId, false);
   const resetChat = panel.querySelector('#p-reset-chat');
@@ -2352,7 +2442,9 @@ function openMenu(petId, x, y) {
       }),
       { label: '召唤全部成员', fn: () => summonWorkers(['w1', 'w2', 'w3', 'w4'], true) },
       { separator: true },
-      { label: '项目与团队设置…', fn: () => openPanel(petId, 'team') },
+      { label: '项目与会话…', fn: () => openPanel(petId, 'work') },
+      { label: '团队管理…', fn: () => openPanel(petId, 'team') },
+      { label: '偏好设置…', fn: () => openPanel(petId, 'settings') },
       { label: '隐藏到托盘（任务继续）', fn: () => window.petOffice.hideApp() },
       { separator: true },
       { label: '退出 Pet Office', danger: true, fn: () => window.petOffice.quit() },
@@ -2374,7 +2466,7 @@ function openMenu(petId, x, y) {
     ? '<div class="menu-separator"></div>'
     : '<button class="menu-item' + (item.danger ? ' danger' : '') + '" data-menu-index="' + index + '">' + esc(item.label) + '</button>').join('');
   menu.classList.remove('hidden');
-  menu.style.left = Math.min(x, innerWidth - 230) + 'px';
+  menu.style.left = Math.max(10, Math.min(x, innerWidth - menu.offsetWidth - 12)) + 'px';
   menu.style.top = Math.max(10, Math.min(y, innerHeight - menu.offsetHeight - 12)) + 'px';
   menu.querySelectorAll('[data-menu-index]').forEach(button => {
     button.onclick = event => {
@@ -2496,15 +2588,15 @@ function composerStackHtml(target, mode, draft) {
   const roster = ['w1', 'w2', 'w3', 'w4'].map(id => pets.get(id)).filter(Boolean);
   const project = currentProject();
   const defaults = mode ? new Set(target.role === 'worker' ? [target.id, 'w1', 'w2'] : ['w1', 'w2']) : new Set([target.id]);
-  return '<div class="composer-stack">' +
+  return '<div class="composer-stack"><div class="composer-title"><span class="composer-avatar">' + uiIcon('chat') + '</span><div><b>与 ' + esc(target.name) + ' 一起工作</b><small>' + esc(modelName(target.model)) + '</small></div><button class="inline-close" id="c-close" title="收起">×</button></div>' +
     '<section class="delegation-options' + (mode ? '' : ' hidden') + '" id="c-delegation-options"><div class="inline-heading"><span><b>参与 Agent</b><small>由 ' + esc(pets.get('supervisor').name) + ' 主管规划、检查和终审</small></span><div class="inline-actions"><button class="text-btn" id="c-recommend">智能推荐</button><button class="text-btn" id="c-open-codex">在 Codex 中打开</button></div></div><div class="recommendation-note hidden" id="c-recommendation-note"></div><div class="agent-grid">' + roster.map(pet =>
       '<label class="agent-choice"><input type="checkbox" data-pet="' + pet.id + '"' + (defaults.has(pet.id) ? ' checked' : '') + '><span class="agent-chip"><i class="member-color c-' + pet.id + '"></i><b>' + esc(pet.name) + '</b><small>' + esc(modelName(pet.model)) + '</small></span><select data-model="' + pet.id + '">' + modelOptions(pet.model) + '</select><span class="agent-capabilities" data-agent-capabilities="' + pet.id + '">' + capabilityBadges(pet.model, true) + '</span></label>'
     ).join('') + '</div><input class="hidden" type="checkbox" id="c-planner" checked><div class="planner-row"><span>推荐只预选参与者；你仍需确认 Agent、模型与主管计划</span></div></section>' +
-    '<div class="composer-project-line' + (mode ? '' : ' hidden') + '" id="c-project-line"><span>共享工作区</span><button class="project-trigger" id="c-project-trigger">' + esc(project ? project.name : '选择或新建项目') + '⌄</button><span class="workspace-note">结果与记忆由所选 Agent 共享</span></div>' +
+    '<div class="composer-project-line" id="c-project-line"><span>项目</span><button class="project-trigger" id="c-project-trigger">' + esc(project ? project.name : '选择或新建项目') + '⌄</button><span class="workspace-note">附件随项目发送</span></div>' +
     '<div class="composer-files hidden" id="c-files"></div>' +
     '<div class="attachment-note hidden" id="c-attachment-note"></div>' +
-    '<div class="composer-input-row"><button class="round-btn' + (!mode && project ? ' hidden' : '') + '" id="c-project-button" title="选择项目">＋</button><textarea id="c-text" rows="1" placeholder="发送给 ' + esc(target.name) + ' · ' + esc(modelName(target.model)) + '；输入 /截图 可选区提问">' + esc(draft) + '</textarea>' +
-    '<label class="delegate-switch" title="分工模式"><span>分工</span>' + switchHtml('c-delegation', mode) + '</label><button class="send-btn" id="c-send" title="发送">↑</button><button class="inline-close" id="c-close" title="收起">×</button></div></div>' +
+    '<div class="composer-input-row"><button class="round-btn' + (!mode && project ? ' hidden' : '') + '" id="c-project-button" title="选择项目">＋</button><textarea id="c-text" rows="3" aria-label="任务内容" placeholder="发送给 ' + esc(target.name) + ' · ' + esc(modelName(target.model)) + '；输入 /截图 可选区提问">' + esc(draft) + '</textarea>' +
+    '<div class="composer-toolbar"><button class="composer-capture" id="c-capture" title="截图提问">' + uiIcon('capture') + '<span>截图</span></button><span class="composer-keyhint">Enter 发送 · Shift + Enter 换行</span><label class="delegate-switch" title="分工模式"><span>分工</span>' + switchHtml('c-delegation', mode) + '</label><button class="send-btn" id="c-send" title="发送">↑</button></div></div></div>' +
     '<div class="project-popover hidden" id="c-project-popover">' + projectPickerHtml() + '</div>';
 }
 
@@ -2535,7 +2627,7 @@ function openComposer(targetPetId = 'supervisor', requestedDelegation = delegati
   composer.innerHTML = composerStackHtml(target, mode, draft);
   composer.classList.remove('hidden');
   syncMouseCapture(composer);
-  composer.querySelectorAll('#c-delegation-options, #c-project-line').forEach(element => element.classList.add('hidden'));
+  composer.querySelectorAll('#c-delegation-options').forEach(element => element.classList.add('hidden'));
   const settledHeight = measureComposerHeight(width);
   const layout = composerLayout(target, mode, settledHeight);
   composer.classList.toggle('morphing', !reusable);
@@ -2595,7 +2687,7 @@ function resizeComposer(pet, mode, animate = true) {
   // example when automatic Agent recommendation returns immediately). Make the
   // requested mode authoritative instead of relying on the cancelled opener to
   // reveal these sections later.
-  composer.querySelectorAll('#c-delegation-options, #c-project-line').forEach(element => element.classList.toggle('hidden', !mode));
+  composer.querySelectorAll('#c-delegation-options').forEach(element => element.classList.toggle('hidden', !mode));
   if (!animate) {
     composer.getAnimations().forEach(animation => animation.cancel());
     composer.classList.remove('morphing');
@@ -2630,10 +2722,11 @@ function bindComposer(targetPetId, initialMode) {
   const composer = $('#composer');
   let mode = initialMode;
   composer.querySelector('#c-close').onclick = () => closeComposer();
+  composer.querySelector('#c-capture').onclick = () => window.petOffice.startCapture(targetPetId);
   composer.querySelector('#c-delegation').onchange = async event => {
     mode = event.target.checked;
     composer.querySelector('#c-delegation-options').classList.toggle('hidden', !mode);
-    composer.querySelector('#c-project-line').classList.toggle('hidden', !mode);
+    composer.querySelector('#c-project-line').classList.remove('hidden');
     composer.querySelector('#c-project-button').classList.toggle('hidden', !mode && !!currentProject());
     await setDelegationMode(mode, false);
     resizeComposer(pets.get(targetPetId), mode);
@@ -2657,6 +2750,7 @@ function bindComposer(targetPetId, initialMode) {
   });
   composer.querySelector('#c-send').onclick = () => submitComposer(targetPetId, mode);
   composer.querySelector('#c-text').onkeydown = event => {
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       const command = composer.querySelector('#c-text').value.trim().toLowerCase();
