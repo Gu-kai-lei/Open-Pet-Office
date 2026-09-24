@@ -138,12 +138,14 @@ gitWorkspace.cleanupSuccessful(gitMission);
 
 let manager;
 const planThreadIds = [];
+const presentCalls = [];
 const planner = {
   async planMission(options) { planThreadIds.push(options.threadId); return { ok: true, value: rawPlan(), threadId: 'supervisor-thread-' + planThreadIds.length }; },
   async reviewWave({ tasks }) { return { ok: true, threadId: 'supervisor-thread', value: { summary: '通过', decisions: tasks.map(task => task.id === 'analysis' && task.attempts === 1
     ? { taskId: task.id, decision: 'retry', reason: '先验证一次自动重试', nextBrief: '重试分析任务', nextAssignee: null, nextModel: null }
     : { taskId: task.id.toUpperCase(), decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '测试通过', nextBrief: null, nextAssignee: null, nextModel: null }) } }; },
   async finalReview() { return { ok: true, threadId: 'supervisor-thread', value: { verdict: 'pass', summary: '全部完成', validationSummary: '测试通过', risks: [] } }; },
+  presentFinal(options) { presentCalls.push(options); return Promise.resolve({ ok: true }); },
 };
 const dispatcher = {
   startTask(task) {
@@ -182,6 +184,9 @@ manager = new MissionManager({
   assert.equal(result.status, 'completed', JSON.stringify(result));
   assert.equal(manager.threadOwner(result.supervisorThreadId).locked, false, 'finished Mission supervisor threads may be opened');
   assert.equal(result.tasks.find(task => task.id === 'analysis').attempts, 2);
+  assert.equal(presentCalls.length, 1, 'final review must schedule one readable summary turn');
+  assert.equal(presentCalls[0].review.verdict, 'pass');
+  assert.equal(presentCalls[0].threadId, result.supervisorThreadId);
   assert.equal(fs.readFileSync(path.join(project, 'a.txt'), 'utf8'), 'a.txt\n');
   assert.equal(fs.readFileSync(path.join(project, 'b.txt'), 'utf8'), 'b.txt\n');
   console.log('mission tests passed');

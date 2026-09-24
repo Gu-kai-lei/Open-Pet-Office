@@ -575,6 +575,18 @@ class MissionManager {
     if (!review.ok) { mission.error = '主管最终复核失败: ' + review.error; this.transition(mission, 'needs_input', 'mission.final_review_failed', { error: review.error }); return; }
     mission.finalReview = review.value;
     this.store.review(mission, 'final', review.value);
+    // The structured final review is machine-readable by design, but it also
+    // becomes the supervisor thread's last message. Append a plain-language
+    // summary turn so opening the finished Mission in Codex shows a readable
+    // report instead of raw JSON. A failure here must never change the result.
+    try {
+      if (typeof this.planner.presentFinal === 'function') {
+        Promise.resolve(this.planner.presentFinal({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), threadId: mission.supervisorThreadId, supervisorModel: this.supervisorModel(), review: review.value, signal: operation.signal }))
+          .catch(error => this.log('主管最终总结生成失败: ' + ((error && error.message) || error)));
+      }
+    } catch (error) {
+      this.log('主管最终总结提交失败: ' + ((error && error.message) || error));
+    }
     if (review.value.verdict === 'fail') { mission.finishedAt = Date.now(); this.transition(mission, 'failed', 'mission.failed', { reason: review.value.summary }); this.onDone(this.publicMission(mission)); return; }
     const artifactDir = path.join(this.store.missionDir(mission.projectPath, mission.id), 'artifacts', 'integration');
     mission.finalChangeSet = this.workspace.finalChangeSet(mission, artifactDir);

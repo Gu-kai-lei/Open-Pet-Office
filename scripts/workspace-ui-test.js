@@ -82,4 +82,7 @@ assert.ok(source.includes("mission.supervisorThreadId && !active"), 'active supe
 assert.ok(source.includes("openMissionDetails(missionId)"), 'live Mission cards must open their in-app record');
 assert.ok(source.includes("result.code === 'ACTIVE_MISSION'"), 'stale Mission thread links must fall back to in-app records');
 assert.ok(source.includes('Mission 结束前由 Pet Office 持有主管任务'), 'the UI must explain Mission thread ownership');
+assert.ok(source.includes('missionFinalHtml(mission.finalReview)'), 'completed Mission cards must render the readable final review block');
+assert.ok(source.includes('mission-verdict'), 'final review verdict must be shown as a labeled badge');
+assert.ok(source.includes('mission-risks'), 'final review risks must be rendered as a list');
 console.log('workspace UI: status filters, Mission handling, IME composition, drop guard, send and screenshot command passed');

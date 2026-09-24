@@ -149,7 +149,7 @@ function parseStructuredOutput(raw) {
   throw new Error('输出中没有可解析的 JSON 对象');
 }
 
-function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, signal, timeoutMs = 300000 }) {
+function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, signal, timeoutMs = 300000, plain = false }) {
   return new Promise(resolve => {
     if (signal && signal.aborted) return resolve({ ok: false, cancelled: true, error: 'Mission 已停止', threadId: threadId || null });
     fs.mkdirSync(missionDir, { recursive: true });
@@ -158,18 +158,20 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     const schemaPath = path.join(missionDir, stamp + '.schema.json');
     const outPath = path.join(missionDir, stamp + '.output.json');
     fs.writeFileSync(promptPath, prompt, 'utf8');
-    fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
-    const instruction = prompt + '\n\nReturn only the JSON object required by the output schema.';
+    if (!plain) fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
+    const instruction = plain ? prompt : prompt + '\n\nReturn only the JSON object required by the output schema.';
     const args = ['/d', '/s', '/c', 'codex', 'exec'];
     if (threadId) {
       // `codex exec resume` does not expose --sandbox, so force the equivalent
       // config value. Without it a resumed supervisor inherits the user's
       // global sandbox and can modify the main project during review.
-      args.push('resume', ...httpProviderArgs(), '-c', 'sandbox_mode=read-only', '--json', '--skip-git-repo-check', '--output-schema', schemaPath, '-o', outPath);
+      args.push('resume', ...httpProviderArgs(), '-c', 'sandbox_mode=read-only', '--json', '--skip-git-repo-check');
+      if (!plain) args.push('--output-schema', schemaPath, '-o', outPath);
       if (model) args.push('-m', model);
       args.push(threadId, '-');
     } else {
-      args.push(...httpProviderArgs(), '--json', '--skip-git-repo-check', '--thread-source', 'pet-office-supervisor', '-C', projectDir, '--sandbox', 'read-only', '--output-schema', schemaPath, '-o', outPath);
+      args.push(...httpProviderArgs(), '--json', '--skip-git-repo-check', '--thread-source', 'pet-office-supervisor', '-C', projectDir, '--sandbox', 'read-only');
+      if (!plain) args.push('--output-schema', schemaPath, '-o', outPath);
       if (model) args.push('-m', model);
       args.push('-');
     }
@@ -237,6 +239,7 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
         error: compactError(eventError) || compactError(stderr) || ('Codex exit ' + code),
         threadId: foundThreadId,
       });
+      if (plain) return finish({ ok: true, threadId: foundThreadId });
       try {
         const value = parseStructuredOutput(fs.readFileSync(outPath, 'utf8'));
         return finish({ ok: true, value, threadId: foundThreadId, outputPath: outPath });
@@ -309,9 +312,25 @@ function finalReview({ projectDir, missionDir, mission, supervisorModel, threadI
   return runSupervisorStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
+function presentFinal({ projectDir, missionDir, threadId, review, supervisorModel, signal }) {
+  const verdict = (review && review.verdict) || '';
+  const verdictLabel = { pass: '通过', partial: '部分达成', fail: '未达成' }[verdict] || verdict || '未知';
+  const prompt = [
+    '# 任务',
+    '你刚刚输出了本 Mission 最终复核的结构化 JSON。请再输出一条给用户直接阅读的中文总结，让对话以可读内容结尾，而不是原始 JSON。',
+    '# 要求',
+    '- 第一行固定为：最终复核：' + verdictLabel + '。',
+    '- 用 3-6 句话概括交付了什么、验证可信度如何。',
+    '- 把 risks 改写成简短的「风险与建议」列表，每条一到两句，合并重复项；没有风险就写“无明显风险”。',
+    '- verdict 不是 pass 时，明确给出建议的下一步（例如先修复哪些文件、补充哪些材料后重新规划）。',
+    '- 直接输出 Markdown 正文；禁止输出 JSON 或代码块，不要大段复述原文。',
+  ].join('\n\n');
+  return runStructured({ projectDir, missionDir, kind: 'final-summary', prompt, model: supervisorModel, threadId, signal, timeoutMs: 180000, plain: true });
+}
+
 function shutdown() {
   for (const child of running) stopChild(child);
   running.clear();
 }
 
-module.exports = { splitTask, planMission, reviewWave, finalReview, runStructured, runSupervisorStructured, recoverableSupervisorThreadError, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: { errorFromEvent, compactError } };
+module.exports = { splitTask, planMission, reviewWave, finalReview, presentFinal, runStructured, runSupervisorStructured, recoverableSupervisorThreadError, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: { errorFromEvent, compactError } };

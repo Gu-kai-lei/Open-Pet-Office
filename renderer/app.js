@@ -1502,6 +1502,20 @@ function missionTaskStatusLabel(status) {
   return ({ blocked: '等待依赖', ready: '可执行', queued: '排队', running: '工作中', succeeded: '等待检查', reviewing: '检查中', retrying: '准备重试', accepted: '已接受', failed: '失败', skipped: '跳过', cancelled: '取消', interrupted: '中断' })[status] || status;
 }
 
+function missionVerdictLabel(verdict) {
+  return ({ pass: '通过', partial: '部分达成', fail: '未达成' })[verdict] || verdict || '未知';
+}
+
+function missionFinalHtml(review) {
+  if (!review) return '';
+  const risks = (Array.isArray(review.risks) ? review.risks : []).filter(Boolean).slice(0, 8);
+  return '<div class="mission-final"><div class="mission-final-head"><b>主管最终复核</b><span class="mission-verdict ' + esc(review.verdict || '') + '">' + esc(missionVerdictLabel(review.verdict)) + '</span></div>'
+    + '<p>' + esc(review.summary || '') + '</p>'
+    + (review.validationSummary ? '<p class="mission-validation"><b>验证情况</b>' + esc(review.validationSummary) + '</p>' : '')
+    + (risks.length ? '<ul class="mission-risks"><li class="mission-risks-title"><b>风险与建议</b></li>' + risks.map(risk => '<li>' + esc(risk) + '</li>').join('') + '</ul>' : '')
+    + '</div>';
+}
+
 function missionCardHtml(mission) {
   const waves = new Map();
   for (const task of mission.tasks || []) {
@@ -1525,7 +1539,7 @@ function missionCardHtml(mission) {
   const active = ACTIVE_MISSION_STATUSES.has(mission.status);
   const supervisorSummary = mission.error || (mission.finalReview && mission.finalReview.summary) || (MISSION_STATUS_TEXT[mission.status] || mission.status);
   const supervisorRecord = '<div class="mission-supervisor-record"><div><b>主管记录</b><span>' + esc(short(supervisorSummary, 180)) + '</span></div><small>' + (active ? 'Mission 结束前由 Pet Office 持有主管任务，请在这里查看进度和处理事项。' : 'Mission 已结束，可以在 Codex 中查看完整主管对话。') + '</small></div>';
-  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
+  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? missionFinalHtml(mission.finalReview) : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
 }
 
 function missionSectionHtml(items = missions) {
