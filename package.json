@@ -1,7 +1,7 @@
 {
   "name": "open-pet-office",
   "productName": "Pet Office",
-  "version": "0.14.10",
+  "version": "0.14.11",
   "description": "电子办公室：多模型协作桌宠（Codex + DeepSeek，经 OpenCodex 路由）",
   "author": "Gu-kai-lei",
   "keywords": [

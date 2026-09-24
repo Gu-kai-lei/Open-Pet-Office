@@ -24,6 +24,12 @@ const { normalizeDroppedLinks } = require('./link-utils');
 
 cfg.ensureDirs();
 try {
+  const providerSync = require('./codex-transport').ensureUserProviderConfig();
+  if (providerSync.changed) cfg.log('codex transport: persisted OpenCodex HTTP provider so desktop can open Pet Office threads');
+} catch (error) {
+  cfg.log('codex transport provider sync failed: ' + error.message);
+}
+try {
   app.setPath('crashDumps', cfg.DIRS.crashes);
   crashReporter.start({ uploadToServer: false, compress: true });
 } catch (error) {

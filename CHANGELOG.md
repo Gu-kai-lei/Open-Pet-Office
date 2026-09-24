@@ -2,6 +2,19 @@
 
 本项目遵循面向产品迭代的版本记录。完整提交历史请查看 GitHub。
 
+## 0.14.11 — 2026-09-24
+
+### Fixed
+
+- 修复 Mission 完成后在 Codex 桌面端无法打开会话的问题。根因是 OpenCodex HTTP provider 仅通过 `-c` 参数注入，会话元数据记录的 `model_provider=pet_office_opencodex_http` 在全局 `config.toml` 中无定义，桌面端加载会话时严格校验并直接拒绝。
+- 检测到 OpenCodex 路由时，启动阶段会把该 provider 以带标记的托管块幂等追加到 `config.toml`：只新增 `[model_providers.pet_office_opencodex_http]` 定义，不修改默认 `model_provider`、模型目录或任何既有配置项；已有手工定义时不会重复写入。
+- 该块同时修复已产生的历史会话：本机 24 个引用该 provider 的会话文件在写入后即可在桌面端重新打开。
+
+### Validation
+
+- 使用真实 Codex CLI 差分复现：空配置加载引用该 provider 的会话报 `Model provider pet_office_opencodex_http not found`；写入托管块后同一命令通过 provider 解析。
+- 新增托管块合并的单元回归：空配置追加、二次写入幂等、过期托管块自愈、手工定义防重复、CRLF 配置兼容。
+
 ## 0.14.10 — 2026-09-24
 
 ### Fixed
