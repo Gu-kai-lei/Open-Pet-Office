@@ -48,6 +48,21 @@ const participants = [{ petId: 'w1', name: '甲', model: null }, { petId: 'w2', 
 const normalized = validatePlan(rawPlan(), participants);
 assert.equal(normalized.tasks[0].wave, 0);
 assert.equal(normalized.tasks[1].wave, 1);
+const uppercaseDependencies = validatePlan({
+  objective: '验证主管常用的大写任务编号', assumptions: [],
+  tasks: [
+    { id: 'T1', title: '输入一', brief: '读取资料一', assigneePetId: 'w1', dependsOn: [], mode: 'read', required: true },
+    { id: 'T2', title: '输入二', brief: '读取资料二', assigneePetId: 'w2', dependsOn: [], mode: 'read', required: true },
+    { id: 'T3', title: '处理一', brief: '处理资料一', assigneePetId: 'w1', dependsOn: ['T1'], mode: 'write', required: true },
+    { id: 'T4', title: '处理二', brief: '处理资料二', assigneePetId: 'w2', dependsOn: ['t2'], mode: 'write', required: true },
+    { id: 'T5', title: '整合', brief: '整合资料', assigneePetId: 'w1', dependsOn: ['T1', 'T2', 'T3', 'T4'], mode: 'write', required: true },
+    { id: 'T6', title: '核验', brief: '交叉核验', assigneePetId: 'w2', dependsOn: ['t3', 't4'], mode: 'verify', required: true },
+    { id: 'T7', title: '交付', brief: '最终交付', assigneePetId: 'w1', dependsOn: ['T5', 't6'], mode: 'write', required: true },
+  ],
+}, participants);
+assert.deepEqual(uppercaseDependencies.tasks.map(task => task.id), ['t1', 't2', 't3', 't4', 't5', 't6', 't7']);
+assert.deepEqual(uppercaseDependencies.tasks.map(task => task.dependsOn), [[], [], ['t1'], ['t2'], ['t1', 't2', 't3', 't4'], ['t3', 't4'], ['t5', 't6']]);
+assert.deepEqual(uppercaseDependencies.tasks.map(task => task.wave), [0, 0, 1, 1, 2, 2, 3]);
 const aliased = validatePlan({
   goal: '兼容第三方模型计划',
   tasks: [{
@@ -127,7 +142,7 @@ const planner = {
   async planMission(options) { planThreadIds.push(options.threadId); return { ok: true, value: rawPlan(), threadId: 'supervisor-thread-' + planThreadIds.length }; },
   async reviewWave({ tasks }) { return { ok: true, threadId: 'supervisor-thread', value: { summary: '通过', decisions: tasks.map(task => task.id === 'analysis' && task.attempts === 1
     ? { taskId: task.id, decision: 'retry', reason: '先验证一次自动重试', nextBrief: '重试分析任务', nextAssignee: null, nextModel: null }
-    : { taskId: task.id, decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '测试通过', nextBrief: null, nextAssignee: null, nextModel: null }) } }; },
+    : { taskId: task.id.toUpperCase(), decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '测试通过', nextBrief: null, nextAssignee: null, nextModel: null }) } }; },
   async finalReview() { return { ok: true, threadId: 'supervisor-thread', value: { verdict: 'pass', summary: '全部完成', validationSummary: '测试通过', risks: [] } }; },
 };
 const dispatcher = {

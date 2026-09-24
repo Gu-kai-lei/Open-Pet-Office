@@ -36,6 +36,20 @@ function taskId(value, index) {
   return base || 'task-' + (index + 1);
 }
 
+function taskReferenceAliases(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return [];
+  const normalized = raw.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 44);
+  return [...new Set([raw, raw.toLowerCase(), normalized].filter(Boolean))];
+}
+
+function resolveTaskReference(value, aliases) {
+  for (const alias of taskReferenceAliases(value)) {
+    if (aliases.has(alias)) return aliases.get(alias);
+  }
+  return null;
+}
+
 function normalizeWorkerReport(raw, task) {
   const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const status = String(value.status || value.validation_result || '').toLowerCase();
@@ -70,10 +84,20 @@ function validatePlan(rawPlan, participants) {
   if (!rawPlan || !Array.isArray(rawPlan.tasks) || !rawPlan.tasks.length) throw new Error('主管没有生成有效任务节点。');
   const allowed = new Map(participants.map(item => [item.petId, item]));
   const ids = new Set();
-  const tasks = rawPlan.tasks.map((raw, index) => {
-    let id = taskId(raw.id, index);
+  const descriptors = rawPlan.tasks.map((raw, index) => {
+    const rawId = String(raw && raw.id || 'task-' + (index + 1)).trim();
+    let id = taskId(rawId, index);
     while (ids.has(id)) id += '-' + (index + 1);
     ids.add(id);
+    return { raw, index, rawId, id };
+  });
+  const referenceAliases = new Map();
+  for (const descriptor of descriptors) {
+    for (const alias of new Set([...taskReferenceAliases(descriptor.rawId), ...taskReferenceAliases(descriptor.id)])) {
+      if (!referenceAliases.has(alias)) referenceAliases.set(alias, descriptor.id);
+    }
+  }
+  const tasks = descriptors.map(({ raw, id }) => {
     if (!allowed.has(raw.assigneePetId)) throw new Error('任务 ' + id + ' 使用了未确认的 Agent。');
     const participant = allowed.get(raw.assigneePetId);
     const fallbackAssignee = raw.fallbackAssignee && allowed.has(raw.fallbackAssignee) ? raw.fallbackAssignee : null;
@@ -96,7 +120,7 @@ function validatePlan(rawPlan, participants) {
     return {
       id, title: String(raw.title || id).slice(0, 120), brief, assigneePetId: raw.assigneePetId,
       assigneeName: participant.name, model: participant.model || null, fallbackAssignee, fallbackModel,
-      dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(String) : [],
+      dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(value => resolveTaskReference(value, referenceAliases) || String(value).trim()) : [],
       mode,
       fileScopes: Array.isArray(raw.fileScopes) ? raw.fileScopes.map(String).slice(0, 50) : [],
       deliverables,
@@ -395,12 +419,16 @@ class MissionManager {
         return;
       }
       this.store.review(mission, 'wave-' + mission.currentWave + '-attempt-' + (mission.retryCount || 0), review.value);
-      const decisionMap = new Map((review.value.decisions || []).map(item => [item.taskId, item]));
+      const decisionMap = new Map();
+      for (const item of review.value.decisions || []) {
+        for (const alias of taskReferenceAliases(item.taskId)) decisionMap.set(alias, item);
+      }
       const accepted = [];
       const retries = [];
       for (const task of pending) {
         if (task.status === 'cancelled' || task.status === 'interrupted') continue;
-        const decision = decisionMap.get(task.id) || { decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '主管未返回该节点的明确决策。' };
+        const decision = taskReferenceAliases(task.id).map(alias => decisionMap.get(alias)).find(Boolean)
+          || { decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '主管未返回该节点的明确决策。' };
         task.review = { ...decision, at: Date.now() };
         if (decision.decision === 'accept' && task.status === 'succeeded') {
           task.status = 'accepted'; accepted.push(task);
