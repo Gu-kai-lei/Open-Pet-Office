@@ -21,3 +21,4 @@ audit-ui/
 audit-ui-*/
 boba-inline-composer.png
 *.log
+scripts/electron-drop-guard/

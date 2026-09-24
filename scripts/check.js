@@ -25,6 +25,7 @@ const files = [
   'src/release-manager.js',
   'src/fullscreen-probe.js',
   'src/link-utils.js',
+  'src/codex-transport.js',
   'src/main.js',
   'src/preload.js',
   'renderer/app.js',
@@ -45,6 +46,10 @@ const files = [
   'scripts/v0133-test.js',
   'scripts/reliability-test.js',
   'scripts/workspace-ui-test.js',
+  'scripts/drop-guard-test.js',
+  'scripts/prompt-pipe-test.js',
+  'scripts/transport-test.js',
+  'scripts/mission-real-e2e.js',
 ];
 
 let failed = false;

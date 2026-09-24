@@ -302,6 +302,7 @@ button { -webkit-app-region: no-drag; }
 #activity.pet-activity .activity-task-copy small { color: #9698a0; }
 #activity.pet-activity .activity-task-copy .activity-progress { color: #ead4aa; background: rgba(232,166,65,.12); }
 #activity.pet-activity .text-btn { color: #7db2ff; }
+#activity.pet-activity .mission-handle { color: #ffc25f; font-weight: 750; }
 #activity.pet-activity .btn { color: var(--text); }
 #activity.pet-activity .btn.danger { color: #f19090; }
 #activity.pet-activity .interaction-list { max-height: none; overflow: visible; padding: 10px 11px; border-color: rgba(255,255,255,.08); background: rgba(255,176,52,.06); }
@@ -400,6 +401,11 @@ button { -webkit-app-region: no-drag; }
 .mission-node aside { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; color: #aaa; font-size: calc(9px * var(--font-scale)); }.mission-node aside i { color: #777b84; font-style: normal; }
 .mission-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }.mission-actions .btn { padding: 6px 9px; font-size: 9px; }.btn.danger.subtle { color: #f19090; background: transparent; }
 .mission-warning { margin-top: 9px; padding: 8px; color: #ffd29b; background: rgba(255,143,31,.10); border: 1px solid rgba(255,143,31,.2); border-radius: 9px; font-size: 9px; line-height: 1.4; }
+.mission-supervisor-record { display: grid; gap: 5px; margin-bottom: 9px; padding: 9px 10px; color: #e8e3d9; background: rgba(242,166,43,.08); border: 1px solid rgba(242,166,43,.18); border-radius: 10px; }
+.mission-supervisor-record > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mission-supervisor-record b { flex: 0 0 auto; color: #ffc866; font-size: calc(9px * var(--font-scale)); }
+.mission-supervisor-record span { overflow: hidden; font-size: calc(10px * var(--font-scale)); line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.mission-supervisor-record small { color: #a9a39a; font-size: calc(9px * var(--font-scale)); line-height: 1.45; }
 .mission-final { margin-top: 9px; padding: 9px; background: rgba(80,200,120,.08); border-radius: 9px; }.mission-final b { font-size: 9px; }.mission-final p { margin-top: 4px; color: #cbd5cb; font-size: 9px; line-height: 1.45; }
 
 .field { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; color: var(--muted); font-size: 11px; }

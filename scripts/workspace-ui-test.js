@@ -60,4 +60,26 @@ enter({});
 assert.deepEqual(captures, ['supervisor']);
 assert.equal(sends.length, 1, 'screenshot command must not also send a chat');
 assert.equal(field.value, '');
-console.log('workspace UI: status filters, IME composition, Shift+Enter, send and screenshot command passed');
+
+// Drop guard contract: a Windows OLE drag ends with a synthesized mouse
+// sequence; it must not close the composer or reset attachments.
+assert.ok(source.includes('let dropGuardUntil = 0;'), 'drop guard state must exist');
+const guardArms = source.split('dropGuardUntil = Date.now() + 800;').length - 1;
+assert.equal(guardArms, 2, 'dragover and drop must both arm the guard');
+assert.ok(source.includes('if (target) target.suppressClickUntil = dropGuardUntil;'), 'drag hover must suppress the hovered pet click handler');
+assert.ok(source.includes('dropGuardUntil = Date.now() + 800;'), 'drop handler must arm the guard');
+assert.ok(source.includes('target.suppressClickUntil = dropGuardUntil;'), 'drop must suppress the pet click handler');
+assert.ok(source.includes('if (Date.now() < dropGuardUntil) return;'), 'stage pointerdown must honor the guard');
+assert.ok(source.includes('floatingComposer'), 'composer-only state must keep the desktop click-through');
+assert.ok(source.includes('modalOverlay = overlayIsOpen() && !floatingComposer'), 'modal surfaces must still capture the window');
+const dragGuardWindow = source.slice(source.indexOf('function beginPetDrag'), source.indexOf('function updatePetDrag'));
+assert.ok(dragGuardWindow.includes('if (Date.now() < dropGuardUntil) return;'), 'drop guard must block the synthesized pointerdown from starting a pet drag');
+assert.ok(source.includes('data-activity-mission='), 'waiting Mission rows must expose a direct handling action');
+assert.ok(source.includes('data-mission-regenerate='), 'failed planning rows must expose a direct replan action');
+assert.ok(source.includes("showMissionPlan(result.mission, result.mission.objective"), 'successful replanning must reopen the confirmation surface');
+assert.ok(source.includes("const ACTIVE_MISSION_STATUSES = new Set"), 'Mission ownership states must be explicit');
+assert.ok(source.includes("mission.supervisorThreadId && !active"), 'active supervisor threads must not expose a Codex open button');
+assert.ok(source.includes("openMissionDetails(missionId)"), 'live Mission cards must open their in-app record');
+assert.ok(source.includes("result.code === 'ACTIVE_MISSION'"), 'stale Mission thread links must fall back to in-app records');
+assert.ok(source.includes('Mission 结束前由 Pet Office 持有主管任务'), 'the UI must explain Mission thread ownership');
+console.log('workspace UI: status filters, Mission handling, IME composition, drop guard, send and screenshot command passed');

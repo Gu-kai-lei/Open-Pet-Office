@@ -6,8 +6,8 @@ const os = require('os');
 const path = require('path');
 const { MissionStore } = require('../src/mission-store');
 const { MissionWorkspace, changedFiles, matchesScope } = require('../src/mission-workspace');
-const { MissionManager, validatePlan } = require('../src/mission-manager');
-const { parseStructuredOutput } = require('../src/planner');
+const { MissionManager, validatePlan, normalizeWorkerReport, WORKER_SCHEMA } = require('../src/mission-manager');
+const { parseStructuredOutput, recoverableSupervisorThreadError, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: plannerInternals } = require('../src/planner');
 const { spawnSync } = require('child_process');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-office-mission-test-'));
@@ -15,6 +15,24 @@ const project = path.join(root, 'project');
 const runtime = path.join(root, 'runtime');
 fs.mkdirSync(project, { recursive: true });
 fs.writeFileSync(path.join(project, 'base.txt'), 'base\n');
+
+function assertStrictSchema(schema, label) {
+  if (!schema || typeof schema !== 'object') return;
+  if (schema.type === 'object' && schema.additionalProperties === false) {
+    assert.deepEqual([...(schema.required || [])].sort(), Object.keys(schema.properties || {}).sort(), label + ' must require every property');
+  }
+  for (const [key, value] of Object.entries(schema.properties || {})) assertStrictSchema(value, label + '.' + key);
+  if (schema.items) assertStrictSchema(schema.items, label + '[]');
+}
+
+assertStrictSchema(PLAN_SCHEMA, 'PLAN_SCHEMA');
+assertStrictSchema(REVIEW_SCHEMA, 'REVIEW_SCHEMA');
+assertStrictSchema(FINAL_SCHEMA, 'FINAL_SCHEMA');
+assertStrictSchema(WORKER_SCHEMA, 'WORKER_SCHEMA');
+assert.equal(plannerInternals.errorFromEvent({ type: 'turn.failed', error: { message: 'schema rejected' } }), 'schema rejected');
+assert.deepEqual(normalizeWorkerReport({
+  file_path: 'deliverables/a.txt', written_content: 'A', validation_result: '通过', status: 'passed', reason: 'done',
+}, {}).outcome, 'success');
 
 function rawPlan() {
   return {
@@ -30,6 +48,18 @@ const participants = [{ petId: 'w1', name: '甲', model: null }, { petId: 'w2', 
 const normalized = validatePlan(rawPlan(), participants);
 assert.equal(normalized.tasks[0].wave, 0);
 assert.equal(normalized.tasks[1].wave, 1);
+const aliased = validatePlan({
+  goal: '兼容第三方模型计划',
+  tasks: [{
+    id: 'alias', title: '别名任务', description: '保留完整任务说明', assigneePetId: 'w1',
+    dependsOn: [], operation: 'write', fileScopes: ['deliverables/result.md'], required: true,
+  }],
+}, participants);
+assert.equal(aliased.objective, '兼容第三方模型计划');
+assert.equal(aliased.tasks[0].brief, '保留完整任务说明');
+assert.equal(aliased.tasks[0].mode, 'write');
+assert(aliased.tasks[0].deliverables.length);
+assert(aliased.tasks[0].validation.length);
 const cyclic = rawPlan();
 cyclic.tasks[0].dependsOn = ['verify'];
 assert.throws(() => validatePlan(cyclic, participants), /循环/);
@@ -37,6 +67,8 @@ assert(matchesScope('src/a.js', 'src/**/*'));
 assert(matchesScope('a.txt', 'a.txt'));
 assert(!matchesScope('b.txt', 'a.txt'));
 assert.deepEqual(parseStructuredOutput('```json\n{"ok":true}\n```'), { ok: true });
+assert.equal(recoverableSupervisorThreadError('thread-source conflict: thread already has an active writer'), true);
+assert.equal(recoverableSupervisorThreadError('request timed out'), false);
 assert.deepEqual(changedFiles({ 'a': { hash: '1', size: 1 } }, { 'a': { hash: '2', size: 1 }, 'b': { hash: '3', size: 1 } }).map(x => x.kind), ['modified', 'added']);
 
 const store = new MissionStore({ runtimeRoot: runtime });
@@ -90,8 +122,9 @@ assert.equal(fs.readFileSync(path.join(gitProject, 'tracked.txt'), 'utf8'), 'aft
 gitWorkspace.cleanupSuccessful(gitMission);
 
 let manager;
+const planThreadIds = [];
 const planner = {
-  async planMission() { return { ok: true, value: rawPlan(), threadId: 'supervisor-thread' }; },
+  async planMission(options) { planThreadIds.push(options.threadId); return { ok: true, value: rawPlan(), threadId: 'supervisor-thread-' + planThreadIds.length }; },
   async reviewWave({ tasks }) { return { ok: true, threadId: 'supervisor-thread', value: { summary: '通过', decisions: tasks.map(task => task.id === 'analysis' && task.attempts === 1
     ? { taskId: task.id, decision: 'retry', reason: '先验证一次自动重试', nextBrief: '重试分析任务', nextAssignee: null, nextModel: null }
     : { taskId: task.id, decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '测试通过', nextBrief: null, nextAssignee: null, nextModel: null }) } }; },
@@ -121,11 +154,18 @@ manager = new MissionManager({
   const draft = await manager.createDraft({ taskText: '完成两阶段变更', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
   assert(draft.ok);
   assert.equal(draft.mission.status, 'awaiting_confirmation');
-  assert(manager.confirm(draft.mission.id).ok);
+  assert.deepEqual(manager.threadOwner(draft.mission.supervisorThreadId), {
+    missionId: draft.mission.id, status: 'awaiting_confirmation', role: 'supervisor', locked: true,
+  });
+  const replanned = await manager.regenerate(draft.mission.id);
+  assert(replanned.ok);
+  assert.deepEqual(planThreadIds, [null, null], 'replanning must create a fresh supervisor thread');
+  assert(manager.confirm(replanned.mission.id).ok);
   const limit = Date.now() + 6000;
   while (Date.now() < limit && !['completed', 'failed', 'needs_input'].includes(manager.get(draft.mission.id).status)) await new Promise(resolve => setTimeout(resolve, 20));
   const result = manager.get(draft.mission.id);
   assert.equal(result.status, 'completed', JSON.stringify(result));
+  assert.equal(manager.threadOwner(result.supervisorThreadId).locked, false, 'finished Mission supervisor threads may be opened');
   assert.equal(result.tasks.find(task => task.id === 'analysis').attempts, 2);
   assert.equal(fs.readFileSync(path.join(project, 'a.txt'), 'utf8'), 'a.txt\n');
   assert.equal(fs.readFileSync(path.join(project, 'b.txt'), 'utf8'), 'b.txt\n');

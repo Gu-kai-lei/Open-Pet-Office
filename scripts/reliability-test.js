@@ -48,7 +48,11 @@ function clientFixture() {
     };
     child.kill = noop; children.push(child); return child;
   };
-  const context = { module: { exports: {} }, require: name => name === 'child_process' ? { spawn } : { log: noop },
+  const context = { module: { exports: {} }, require: name => {
+    if (name === 'child_process') return { spawn };
+    if (name === './codex-transport') return { httpProviderArgs: () => [] };
+    return { log: noop };
+  },
     process: { platform: 'win32', env: {} }, setTimeout, clearTimeout };
   vm.runInNewContext(read('src/appserver.js'), context);
   return { client: new context.module.exports.AppServerClient(), children };
@@ -236,11 +240,14 @@ function clientFixture() {
     const spawned = [];
     const fakeSpawn = (command, args) => {
       const child = new EventEmitter(); child.pid = 42; child.kill = noop; child.unref = noop;
-      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+      child.stdin.write = noop; child.stdin.end = noop;
       spawned.push({ command, args, child }); return child;
     };
     const context = { module: { exports: {} }, require: name => name === 'child_process' ? { spawn: fakeSpawn }
-      : name === './config' ? { log: noop } : require(name),
+      : name === './config' ? { log: noop }
+      : name === './codex-transport' ? { httpProviderArgs: () => [] }
+      : require(name),
     process: { platform: 'win32' }, setTimeout, clearTimeout, Buffer };
     vm.runInNewContext(read('src/planner.js'), context);
     const controller = new AbortController();

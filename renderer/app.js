@@ -9,6 +9,7 @@ const MISSION_STATUS_TEXT = {
   planning: '主管规划中', awaiting_confirmation: '等待确认', running: '执行中', reviewing: '主管检查中',
   needs_input: '需要处理', interrupted: '已中断', completed: '已完成', partially_succeeded: '部分成功', failed: '失败', cancelled: '已取消',
 };
+const ACTIVE_MISSION_STATUSES = new Set(['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted']);
 
 let S = null;
 let delegationOn = false;
@@ -20,6 +21,7 @@ let tooltipTimer = null;
 let dragState = null;
 let composerPetId = null;
 let composerCloseTimer = null;
+let dropGuardUntil = 0;
 let composerAttachments = [];
 let composerSubmitting = false;
 let diagnosticsReport = null;
@@ -241,6 +243,7 @@ async function init() {
     }
   });
   $('#stage').addEventListener('pointerdown', event => {
+    if (Date.now() < dropGuardUntil) return;
     if (!event.target.closest('.ui')) {
       closeOverlays();
       syncMouseCapture(event.target);
@@ -254,7 +257,20 @@ function overlayIsOpen() {
 
 function syncMouseCapture(target) {
   const interactive = !!(target && target.closest && target.closest('.ui'));
-  window.petOffice.setMouseIgnore(!interactive && !overlayIsOpen());
+  // The pet composer floats over the desktop like a sticky note: while it is
+  // the only open surface, the window stays click-through everywhere except
+  // over the composer and the pets. Clicking another app — for example the
+  // browser to grab a second link — must reach that app instead of landing on
+  // our blank stage, closing the input and swallowing the click. Modal
+  // surfaces (panel, activity, menus, confirmations) still capture the window.
+  const composer = $('#composer');
+  const floatingComposer = composer
+    && !composer.classList.contains('hidden')
+    && composer.classList.contains('pet-composer')
+    && !composer.classList.contains('confirming')
+    && !composer.classList.contains('mission-preview');
+  const modalOverlay = overlayIsOpen() && !floatingComposer;
+  window.petOffice.setMouseIgnore(!interactive && !modalOverlay);
 }
 
 function buildPets() {
@@ -348,6 +364,11 @@ function createPet(pet) {
 
 function beginPetDrag(event, petId) {
   if (event.button !== 0 || event.target.closest('button,input,textarea,select,.quickbar')) return;
+  // The synthesized pointerdown that ends a Windows OLE drop must not start a
+  // pet drag: its pointerup never arrives (the drag session swallowed it), so
+  // the leftover drag state would move the pet with the cursor and close the
+  // composer on the next mouse move.
+  if (Date.now() < dropGuardUntil) return;
   const pet = pets.get(petId);
   if (!pet) return;
   dragState = {
@@ -543,6 +564,11 @@ function bindEvents() {
       setPinnedLiveTask(pin.dataset.livePin);
       return;
     }
+    const missionId = $('#live-task').dataset.missionId;
+    if (missionId) {
+      openMissionDetails(missionId);
+      return;
+    }
     const threadId = $('#live-task').dataset.threadId;
     if (threadId) openCodexThread(threadId);
     else openActivity();
@@ -573,7 +599,12 @@ function bindFileDrop() {
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     window.petOffice.setMouseIgnore(false);
+    // Keep the guard armed for the whole drag session: after the first drop
+    // the user goes back for a second link, hovers again, and the guard must
+    // still cover the synthesized mouse sequence that follows each release.
+    dropGuardUntil = Date.now() + 800;
     const target = dropTargetPet(event);
+    if (target) target.suppressClickUntil = dropGuardUntil;
     for (const pet of pets.values()) pet.el.classList.toggle('drop-target', !!target && pet.id === target.id);
   });
   document.addEventListener('dragleave', event => {
@@ -588,6 +619,12 @@ function bindFileDrop() {
     clearDropTargets();
     const target = dropTargetPet(event) || pets.get('supervisor');
     if (!target) return;
+    // A Windows OLE drag session ends with a synthesized mouse sequence at the
+    // release point. Treat it as part of the drop: without this guard the pet
+    // click handler runs closeComposer() and the input disappears exactly when
+    // the user drops a second link onto the pet.
+    dropGuardUntil = Date.now() + 800;
+    target.suppressClickUntil = dropGuardUntil;
     const files = Array.from(dataTransfer.files || []);
     const rawLinks = {
       uriList: dataTransfer.getData('text/uri-list') || '',
@@ -831,7 +868,7 @@ function activeTask() {
 
 function activeMission() {
   return [...missions]
-    .filter(mission => ['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status))
+    .filter(mission => ACTIVE_MISSION_STATUSES.has(mission.status))
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))[0] || null;
 }
 
@@ -885,7 +922,8 @@ function updateLiveTaskCard(showCompletion = false) {
     const key = 'mission:' + mission.id;
     const pinnedMark = S.ui.pinnedLiveTaskKey === key;
     card.innerHTML = '<span class="live-task-dot ' + status + '"></span><span class="live-task-copy"><span class="live-task-meta"><strong>主管 Mission</strong><span class="live-task-source">' + esc(mission.projectName || '项目') + '</span><i>' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + '</i>' + (activeNodes.length > 1 ? '<em>另有 ' + (activeNodes.length - 1) + ' 个节点</em>' : '') + '</span><b>' + esc(short(mission.objective, 72)) + '</b><small><i>阶段 ' + ((mission.currentWave || 0) + 1) + '</i>' + esc(detail) + '</small></span><span class="live-task-actions"><span class="live-pin' + (pinnedMark ? ' active' : '') + '" data-live-pin="' + esc(key) + '" title="' + (pinnedMark ? '取消固定' : '固定任务卡') + '">⌖</span><span class="live-task-open">›</span></span>';
-    card.dataset.threadId = mission.supervisorThreadId || '';
+    card.dataset.threadId = ACTIVE_MISSION_STATUSES.has(mission.status) ? '' : (mission.supervisorThreadId || '');
+    card.dataset.missionId = mission.id;
     card.dataset.liveKey = key;
     card.classList.remove('hidden');
     const boss = pets.get('supervisor');
@@ -914,6 +952,7 @@ function updateLiveTaskCard(showCompletion = false) {
   const pinnedMark = S.ui.pinnedLiveTaskKey === key;
   card.innerHTML = '<span class="live-task-dot ' + status + '"></span><span class="live-task-copy"><span class="live-task-meta"><strong>' + esc(agentName) + '</strong><span class="live-task-source">' + esc(source) + '</span><span class="live-task-model">' + esc(model) + '</span><i>' + esc(statusLabel) + '</i>' + (running.length > 1 ? '<em>另有 ' + (running.length - 1) + ' 项</em>' : '') + '</span><b>' + esc(title) + '</b><small><i>' + esc(progressStageLabel(task.progressStage)) + '</i>' + esc(detail) + '</small></span><span class="live-task-actions"><span class="live-pin' + (pinnedMark ? ' active' : '') + '" data-live-pin="' + esc(key) + '" title="' + (pinnedMark ? '取消固定' : '固定任务卡') + '">⌖</span><span class="live-task-open">›</span></span>';
   card.dataset.threadId = task.threadId || '';
+  card.removeAttribute('data-mission-id');
   card.dataset.liveKey = key;
   card.classList.remove('hidden');
   const boss = pets.get('supervisor');
@@ -927,6 +966,7 @@ function hideLiveTaskCard() {
   if (card) {
     card.classList.add('hidden');
     card.removeAttribute('data-thread-id');
+    card.removeAttribute('data-mission-id');
     card.removeAttribute('data-live-key');
   }
   const boss = pets.get('supervisor');
@@ -1435,8 +1475,18 @@ function activityTaskHtml(task) {
   const status = statusForTask(task.status);
   const label = STATUS_TEXT[status] || task.status || '待命';
   const source = task.source === 'desktop' ? (task.surface || 'Codex 桌面端') : (task.source === 'mission' ? 'Mission' : (task.source === 'delegation' ? '分工' : '桌宠会话'));
+  const mission = task.source === 'mission' && task.missionId ? missions.find(item => item.id === task.missionId) : null;
+  const missionAction = mission && task.status === 'waiting_input'
+    ? (mission.status === 'needs_input' && !mission.pendingAction && !(mission.tasks || []).length
+      ? '<button class="text-btn mission-handle" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>'
+      : '<button class="text-btn mission-handle" data-activity-mission="' + esc(mission.id) + '">' + (mission.status === 'awaiting_confirmation' ? '查看计划' : '处理') + '</button>')
+    : '';
+  const isSupervisorTask = mission && task.id === mission.id + ':supervisor';
+  const missionThreadCanOpen = !mission || (isSupervisorTask
+    ? !ACTIVE_MISSION_STATUSES.has(mission.status)
+    : ['done', 'failed', 'cancelled'].includes(task.status));
   return '<article class="activity-task" data-task-status="' + esc(task.status) + '"><span class="status-dot ' + status + '"></span><div class="activity-task-copy"><div><b>' + esc(task.petName || (pets.get(task.petId) && pets.get(task.petId).name) || task.petId || 'Agent') + '</b><small class="task-source">' + esc(source) + '</small><small>' + esc(modelName(task.model)) + '</small></div><p>' + esc(short(task.brief, 110)) + '</p>' + (task.progress ? '<p class="activity-progress"><span>' + esc(progressStageLabel(task.progressStage)) + '</span>' + esc(short(task.progress, 150)) + '</p>' : '') + '</div>' +
-    '<div class="activity-task-side"><span>' + esc(label) + '</span><button class="text-btn pin-task' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? ' active' : '') + '" data-pin-task="task:' + esc(task.id) + '">' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? '已固定' : '固定') + '</button>' + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + (task.source === 'pet-chat' && ['queued', 'running', 'waiting_input'].includes(task.status) ? '<button class="text-btn cancel-task" data-activity-cancel="' + esc(task.id) + '">取消</button>' : '') + '</div></article>';
+    '<div class="activity-task-side"><span>' + esc(label) + '</span>' + missionAction + '<button class="text-btn pin-task' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? ' active' : '') + '" data-pin-task="task:' + esc(task.id) + '">' + (S.ui.pinnedLiveTaskKey === 'task:' + task.id ? '已固定' : '固定') + '</button>' + (task.threadId && missionThreadCanOpen ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + (task.source === 'pet-chat' && ['queued', 'running', 'waiting_input'].includes(task.status) ? '<button class="text-btn cancel-task" data-activity-cancel="' + esc(task.id) + '">取消</button>' : '') + '</div></article>';
 }
 
 function missionStatusClass(status) {
@@ -1461,7 +1511,7 @@ function missionCardHtml(mission) {
   }
   const taskRows = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, items]) =>
     '<div class="mission-wave"><div class="mission-wave-title">阶段 ' + (wave + 1) + '<span>' + items.length + '</span></div>' + items.map(task =>
-      '<div class="mission-node"><span class="mission-node-state ' + esc(task.status) + '"></span><div><b>' + esc(task.title) + '</b><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.review && task.review.reason ? '<p>' + esc(short(task.review.reason, 130)) + '</p>' : '') + '</div><aside><span>' + esc(missionTaskStatusLabel(task.status)) + '</span>' + (task.attempts ? '<i>第 ' + task.attempts + ' 次</i>' : '') + (task.threadId ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</aside></div>'
+      '<div class="mission-node"><span class="mission-node-state ' + esc(task.status) + '"></span><div><b>' + esc(task.title) + '</b><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.review && task.review.reason ? '<p>' + esc(short(task.review.reason, 130)) + '</p>' : '') + '</div><aside><span>' + esc(missionTaskStatusLabel(task.status)) + '</span>' + (task.attempts ? '<i>第 ' + task.attempts + ' 次</i>' : '') + (task.threadId && ['accepted', 'failed', 'skipped', 'cancelled'].includes(task.status) ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</aside></div>'
     ).join('') + '</div>'
   ).join('');
   let actions = '';
@@ -1469,9 +1519,13 @@ function missionCardHtml(mission) {
   else if (mission.status === 'interrupted') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">检查并恢复</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'high_risk') actions = '<button class="btn danger" data-mission-apply="' + esc(mission.id) + '">确认高风险回写</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">我已手动处理</button>';
+  else if (mission.status === 'needs_input' && !(mission.tasks || []).length) actions = '<button class="btn primary" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>';
   if (['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
   const key = 'mission:' + mission.id;
-  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">打开主管任务</button>' : '') + actions + '</div></div></details>';
+  const active = ACTIVE_MISSION_STATUSES.has(mission.status);
+  const supervisorSummary = mission.error || (mission.finalReview && mission.finalReview.summary) || (MISSION_STATUS_TEXT[mission.status] || mission.status);
+  const supervisorRecord = '<div class="mission-supervisor-record"><div><b>主管记录</b><span>' + esc(short(supervisorSummary, 180)) + '</span></div><small>' + (active ? 'Mission 结束前由 Pet Office 持有主管任务，请在这里查看进度和处理事项。' : 'Mission 已结束，可以在 Codex 中查看完整主管对话。') + '</small></div>';
+  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? '<div class="mission-final"><b>主管最终复核</b><p>' + esc(mission.finalReview.summary || '') + '</p></div>' : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
 }
 
 function missionSectionHtml(items = missions) {
@@ -1623,6 +1677,18 @@ function openActivity() {
   syncMouseCapture(panel);
 }
 
+function openMissionDetails(missionId) {
+  if (!missionId) return openActivity();
+  activityView = 'all';
+  if (activitySurface.state === 'closing') closeActivity(true);
+  if (activitySurface.state === 'closed') openActivity();
+  else refreshActivityContents();
+  const card = $('#activity').querySelector('[data-mission-id="' + CSS.escape(missionId) + '"]');
+  if (!card) return bubble('supervisor', '未找到对应的 Mission 记录', 5000, 'attention');
+  card.open = true;
+  card.scrollIntoView({ behavior: motionReduced() ? 'auto' : 'smooth', block: 'center' });
+}
+
 function applyActivityRect(rect) {
   const panel = $('#activity');
   panel.style.left = Math.round(rect.left) + 'px';
@@ -1678,6 +1744,9 @@ function bindActivity() {
   panel.querySelectorAll('[data-activity-thread]').forEach(button => {
     button.onclick = () => openCodexThread(button.dataset.activityThread);
   });
+  panel.querySelectorAll('[data-activity-mission]').forEach(button => {
+    button.onclick = () => openMissionDetails(button.dataset.activityMission);
+  });
   const projectFilter = panel.querySelector('#activity-project-filter');
   if (projectFilter) projectFilter.onchange = async () => {
     S.ui.taskProjectFilter = projectFilter.value;
@@ -1692,7 +1761,20 @@ function bindActivity() {
     };
   });
   panel.querySelectorAll('[data-mission-confirm]').forEach(button => { button.onclick = async () => { await window.petOffice.confirmMission(button.dataset.missionConfirm); }; });
-  panel.querySelectorAll('[data-mission-regenerate]').forEach(button => { button.onclick = async () => { button.disabled = true; await window.petOffice.regenerateMission(button.dataset.missionRegenerate); }; });
+  panel.querySelectorAll('[data-mission-regenerate]').forEach(button => { button.onclick = async () => {
+    button.disabled = true;
+    const missionId = button.dataset.missionRegenerate;
+    const result = await window.petOffice.regenerateMission(missionId);
+    if (!result || !result.ok) {
+      button.disabled = false;
+      bubble('supervisor', (result && result.error) || '重新规划失败', 7000, 'attention');
+      return;
+    }
+    missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
+    closeActivity(true);
+    showMissionPlan(result.mission, result.mission.objective, result.mission.participants || []);
+    bubble('supervisor', '新计划已生成，请确认后开工。', 6500);
+  }; });
   panel.querySelectorAll('[data-mission-resume]').forEach(button => { button.onclick = async () => { await window.petOffice.resumeMission(button.dataset.missionResume); }; });
   panel.querySelectorAll('[data-mission-cancel]').forEach(button => { button.onclick = async () => { await window.petOffice.cancelMission(button.dataset.missionCancel); }; });
   panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionApply, 'apply'); }; });
@@ -2300,6 +2382,11 @@ function bindProjectControls(root, petId) {
 async function openCodexThread(threadId) {
   const result = await window.petOffice.openCodex(threadId || null);
   if (!result || result.ok !== false) return result;
+  if (result.code === 'ACTIVE_MISSION') {
+    openMissionDetails(result.missionId);
+    bubble('supervisor', result.error || 'Mission 运行期间请在任务中心查看记录', 7500, 'attention');
+    return result;
+  }
   if (result.code !== 'ACTIVE_PET_CHAT') {
     bubble('supervisor', result.error || '无法打开 Codex', 7000);
     return result;

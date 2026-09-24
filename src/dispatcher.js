@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { _internals: { redact } } = require('./session-monitor');
 const { log, CODEX_HOME } = require('./config');
+const { httpProviderArgs } = require('./codex-transport');
 
 const running = new Map();
 let queue = [];
@@ -58,16 +59,21 @@ function run(t) {
       return resolve();
     }
     const prompt = t.prompt || ('Read ' + JSON.stringify(briefPath) + ' and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.');
-    const args = ['/c', 'codex', 'exec', '--json', '--skip-git-repo-check', '-C', t.projectDir, '--sandbox', 'workspace-write', '-o', outPath];
+    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs(), '--json', '--skip-git-repo-check', '-C', t.projectDir, '--sandbox', 'workspace-write', '-o', outPath];
     if (t.threadSource) args.push('--thread-source', t.threadSource);
     if (t.outputSchemaPath) args.push('--output-schema', t.outputSchemaPath);
     if (t.model) args.push('-m', t.model);
-    args.push(prompt);
+    // Pipe the prompt via stdin: cmd.exe cuts command-line arguments at the
+    // first newline, which silently truncated any multi-line task prompt.
+    args.push('-');
     emit({ type: 'started', taskId: t.id, model: t.model || '(codex默认)' });
     const startedAt = Date.now();
     let child;
     try {
-      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdin.on('error', () => {});
+      child.stdin.write(prompt, 'utf8');
+      child.stdin.end();
     } catch (e) {
       emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '无法启动 codex: ' + e.message });
       return resolve();
@@ -75,6 +81,8 @@ function run(t) {
     const runtime = { child, meta: t, cancelled: false };
     running.set(t.id, runtime);
     let buf = '';
+    let eventError = '';
+    let stderrTail = '';
     let latestTokens = 0;
     let latestProgress = '';
     const onLine = line => {
@@ -82,6 +90,11 @@ function run(t) {
       if (!line.startsWith('{')) return;
       try {
         const obj = JSON.parse(line);
+        const type = String(obj.type || obj.method || '').toLowerCase();
+        const item = obj.item || (obj.params && obj.params.item) || {};
+        if (type === 'error' && obj.message) eventError = String(obj.message);
+        else if ((type.includes('turn.failed') || type.includes('turn/failed')) && obj.error) eventError = String(obj.error.message || obj.error);
+        else if (String(item.type || '').toLowerCase() === 'error' && item.message) eventError = String(item.message);
         const tid = obj.thread_id || obj.session_id || (obj.thread && obj.thread.id) || (obj.msg && (obj.msg.id || obj.msg.thread_id));
         if (tid && !t.threadId) { t.threadId = tid; emit({ type: 'session', taskId: t.id, threadId: tid }); }
         const usage = findTotalTokens(obj);
@@ -97,16 +110,26 @@ function run(t) {
       } catch {}
     };
     child.stdout.on('data', d => { buf += d.toString(); const lines = buf.split(/\r?\n/); buf = lines.pop(); lines.forEach(onLine); });
-    child.stderr.on('data', d => { const s = d.toString().trim(); if (s) emit({ type: 'log', taskId: t.id, text: s.slice(0, 400) }); });
+    child.stderr.on('data', d => {
+      const s = d.toString().trim();
+      if (!s) return;
+      stderrTail = (stderrTail + '\n' + s).slice(-4000);
+      emit({ type: 'log', taskId: t.id, text: s.slice(0, 400) });
+    });
     child.on('exit', code => {
       running.delete(t.id);
       if (!runtime.cancelled) {
+        if (buf.trim()) onLine(buf);
         const sessionTokens = readSessionTokens(t.threadId, startedAt);
         if (sessionTokens > latestTokens) {
           latestTokens = sessionTokens;
           emit({ type: 'usage', taskId: t.id, tokens: sessionTokens });
         }
-        emit({ type: code === 0 ? 'done' : 'failed', taskId: t.id, exitCode: code, elapsedMs: Date.now() - startedAt, resultPath: outPath });
+        emit({
+          type: code === 0 ? 'done' : 'failed', taskId: t.id, exitCode: code,
+          error: code === 0 ? undefined : (oneLine(eventError, 1200) || oneLine(stderrTail, 1200) || ('Codex exit ' + code)),
+          elapsedMs: Date.now() - startedAt, resultPath: outPath,
+        });
       }
       resolve();
     });

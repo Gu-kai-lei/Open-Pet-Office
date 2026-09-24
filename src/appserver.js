@@ -4,6 +4,7 @@
 // 让桌宠使用与 Codex 桌面端相同线程模型（thread / turn / item 事件）。
 const { spawn } = require('child_process');
 const cfg = require('./config');
+const { httpProviderArgs } = require('./codex-transport');
 
 // Codex Desktop only shows locally-created conversations in its normal task list
 // when they carry the desktop client's originator. Pet Office behaves as a
@@ -41,9 +42,10 @@ class AppServerClient {
     this.lastStartedAt = Date.now();
     this.buffer = '';
     const command = process.platform === 'win32' ? 'cmd.exe' : 'codex';
+    const transportArgs = httpProviderArgs();
     const args = process.platform === 'win32'
-      ? ['/c', 'codex', 'app-server', '--listen', 'stdio://']
-      : ['app-server', '--listen', 'stdio://'];
+      ? ['/d', '/s', '/c', 'codex', 'app-server', ...transportArgs, '--listen', 'stdio://']
+      : ['app-server', ...transportArgs, '--listen', 'stdio://'];
     let child;
     try {
       child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });

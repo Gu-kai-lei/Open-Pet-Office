@@ -2,6 +2,99 @@
 
 本项目遵循面向产品迭代的版本记录。完整提交历史请查看 GitHub。
 
+## 0.14.9 — 2026-09-24
+
+### Fixed
+
+- 修复 Mission 主管的严格 JSON Schema：所有声明字段均进入 `required`，可选值使用 nullable，避免 Responses API 返回 `Required properties must match all properties in the object`。
+- 主管命令失败时解析 Codex JSONL 的 `error` / `turn.failed` 事件，不再把可操作的服务端错误丢弃成笼统的 `Codex exit 1`；工作者失败同样保留真实原因。
+- 修复主管续接 thread 时漏传只读沙箱，阶段检查和最终复核不能再提前修改主项目；安全回写仍由 Pet Office 在基线与风险检查通过后执行。
+- 兼容未严格遵守工作者输出 Schema 的路由模型，将常见报告字段正规化，并以实际工作区变更覆盖模型自报的 `changedFiles`。
+
+### Validation
+
+- 新增可重复运行的真实 Mission 端到端验收，使用 GPT-5.6-Sol 与 GLM-5.3 完成双 Agent 并行写入、一次自动重试、主管阶段检查、最终只读复核和主项目安全回写。
+- 真实验收最终状态为 `completed`，两个工作者节点均为 `accepted`，目标文件内容分别为 `ALPHA_OK` 与 `BETA_OK`。
+
+## 0.14.8 — 2026-09-24
+
+### Fixed
+
+- 检测到 Codex 由本地 OpenCodex 代理接管时，为普通桌宠对话、Mission 主管和工作者统一注入专用 HTTP provider，并显式设置 `supports_websockets = false`。
+- 修复 OpenCodex 已关闭 Responses WebSocket 时，Codex app-server 仍连接 `ws://127.0.0.1:10100/v1/responses` 并反复报告 `426 Upgrade Required` 的问题。
+
+### Changed
+
+- OpenCodex 路由保持使用现有登录和模型目录，只切换传输能力声明，不修改用户的全局 Codex/OpenCodex 配置。
+- 增加传输配置和 Windows 真实命令行参数回归测试。
+
+## 0.14.7 — 2026-09-23
+
+### Fixed
+
+- Mission 运行期间不再把主管 thread 暴露为可直接打开的 Codex 链接；任务卡改为打开 Pet Office 内的主管记录，避免 Codex Desktop 取得写入权后触发 `already has an active writer`。
+- 主进程增加 Mission thread 所有权校验，即使旧界面或残留入口尝试打开活动主管/工作者任务，也会返回任务中心而不会启动 Codex Desktop。
+
+### Changed
+
+- Mission 卡片明确显示主管记录和当前所有权说明；Mission 结束后仍可在 Codex 中查看完整对话。
+- 活动工作者节点完成后允许查看其 Codex 对话，执行中的节点保持由 Pet Office 管理。
+
+## 0.14.6 — 2026-09-23
+
+### Fixed
+
+- “重新规划”不再续接可能仍被 Codex Desktop 占用的旧主管 thread，而是创建新的主管任务，修复 `thread-source conflict` / `already has an active writer` 循环失败。
+- 阶段检查或最终复核若发现主管 thread 被占用、归档或不可续接，会自动新建主管任务并继续当前 Mission。
+
+### Changed
+
+- 增加旧主管任务被占用时自动切换新 thread 的真实 Windows 子进程回归测试，以及重新规划必须使用新 thread 的状态机测试。
+
+## 0.14.5 — 2026-09-23
+
+### Fixed
+
+- 修复主管任务重新规划时，`codex exec resume` 未在项目目录运行且未携带 `--skip-git-repo-check`，导致非 Git 项目报 `Not inside a trusted directory` 并再次停在“需要处理”。
+- 等待处理列表中的 Mission 主管任务现在直接显示“重新规划”或“处理/查看计划”，无需在任务中心继续寻找另一张卡片。
+- 从任务中心重新规划成功后自动弹出主管计划确认窗口，可直接“确认并开工”；重新规划失败会恢复按钮并显示明确错误。
+
+### Changed
+
+- Windows 提示词管道测试增加续接任务的项目工作目录和信任参数校验。
+
+## 0.14.4 — 2026-09-23
+
+### Fixed
+
+- 兼容第三方路由模型返回的 `goal / description / operation` Mission 字段，分别正规化为 `objective / brief / mode`，避免确认后丢失目标、任务说明或写入/核验模式。
+- 模型遗漏 `deliverables` 或 `validation` 时补充明确的通用交付与核验约束，工作者仍会报告产物路径、完成情况和未解决问题。
+
+### Changed
+
+- 主管提示词明确要求使用 Mission 标准字段，并增加别名计划回归测试。
+
+## 0.14.3 — 2026-09-23
+
+### Fixed
+
+- 修复 Windows `cmd.exe` 将多行 Mission 提示词截断为首行，导致主管 Codex 任务只收到“角色”、无法生成结构化计划的问题。
+- 主管新任务、继续规划和工作者自定义提示词统一通过标准输入传递，保留完整目标、角色、规则和验收内容。
+- 规划失败且尚未生成任务节点时，任务中心提供“重新规划”，旧失败 Mission 可直接恢复；解析失败提示会附带模型输出开头，便于定位非 JSON 回复。
+
+### Changed
+
+- 增加 Windows 真实子进程提示词管道回归测试，覆盖新建主管任务、续接主管任务和工作者任务。
+
+## 0.14.2 — 2026-09-23
+
+### Fixed
+
+- 修复连续拖放多个链接给桌宠时输入框被意外关闭。完整根因有三层：
+- Windows 拖放结束会在释放点派发合成点击，被当作真实点击关闭输入框；现已在整个拖放会话期间抑制该序列。
+- 拖放的合成 pointerdown 会建立残留的桌宠拖动状态（配对的 pointerup 被拖放会话吞掉），之后移动鼠标会触发"拖动桌宠"并收起输入框；保护期内不再建立拖动。
+- 输入框打开时全屏透明窗口截获所有点击，点击其他应用会落到空白背景上被当作"点击外部关闭"；现在输入框以浮动便签方式工作，空白区域保持点击穿透，鼠标回到输入框或桌宠时恢复交互。面板、任务中心和确认对话框仍保持整窗模态。
+
 ## 0.14.1 — 2026-09-23
 
 ### Fixed

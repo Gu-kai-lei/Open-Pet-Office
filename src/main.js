@@ -1688,6 +1688,18 @@ ipcMain.handle('codex:open', async (e, threadId) => {
       error: '这个任务正在由桌宠执行。若要在 Codex 中继续，需要先移交并停止当前回合。',
     };
   }
+  const missionOwner = threadId && missionManager.threadOwner(threadId);
+  if (missionOwner && missionOwner.locked) {
+    return {
+      ok: false,
+      code: 'ACTIVE_MISSION',
+      missionId: missionOwner.missionId,
+      threadId,
+      error: missionOwner.role === 'supervisor'
+        ? '主管任务正在由 Pet Office 管理。Mission 结束前请在任务中心查看记录，避免 Codex Desktop 占用同一任务。'
+        : '这个 Mission 节点仍在执行。完成后才能在 Codex Desktop 中打开。',
+    };
+  }
   if (threadId && !liveChats.size && appServer.child) {
     appServer.stop();
     loadedThreads.clear();

@@ -36,6 +36,36 @@ function taskId(value, index) {
   return base || 'task-' + (index + 1);
 }
 
+function normalizeWorkerReport(raw, task) {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const status = String(value.status || value.validation_result || '').toLowerCase();
+  const outcome = ['success', 'partial', 'failed'].includes(value.outcome)
+    ? value.outcome
+    : (/pass|success|通过|完成/.test(status) ? 'success' : (/fail|block|失败|阻塞/.test(status) ? 'failed' : 'partial'));
+  const summary = String(value.summary || value.reason || (
+    value.file_path ? ('工作者已返回 ' + value.file_path + ' 的执行报告。') : '工作者已返回结构化报告。'
+  ));
+  const changedFiles = Array.isArray(value.changedFiles) ? value.changedFiles.map(String)
+    : (value.file_path && value.written_content != null ? [String(value.file_path)] : []);
+  const validation = Array.isArray(value.validation) ? value.validation.map(entry => ({
+    command: String(entry && entry.command || '未记录命令'),
+    status: ['passed', 'failed', 'not_run'].includes(entry && entry.status) ? entry.status : 'not_run',
+    summary: String(entry && entry.summary || ''),
+  })) : (value.validation_result ? [{
+    command: '工作者读回核验',
+    status: /pass|success|通过/.test(status) ? 'passed' : 'failed',
+    summary: String(value.validation_result),
+  }] : []);
+  const messages = Array.isArray(value.messages) ? value.messages.map(entry => ({
+    to: String(entry && entry.to || 'supervisor'),
+    type: ['status', 'question', 'result', 'context'].includes(entry && entry.type) ? entry.type : 'result',
+    summary: String(entry && entry.summary || ''),
+  })) : [];
+  const blockers = Array.isArray(value.blockers) ? value.blockers.map(String)
+    : (outcome === 'failed' && value.reason ? [String(value.reason)] : []);
+  return { outcome, summary, changedFiles, artifacts: Array.isArray(value.artifacts) ? value.artifacts.map(String) : [], validation, messages, blockers };
+}
+
 function validatePlan(rawPlan, participants) {
   if (!rawPlan || !Array.isArray(rawPlan.tasks) || !rawPlan.tasks.length) throw new Error('主管没有生成有效任务节点。');
   const allowed = new Map(participants.map(item => [item.petId, item]));
@@ -50,14 +80,27 @@ function validatePlan(rawPlan, participants) {
     const fallbackPet = fallbackAssignee ? allowed.get(fallbackAssignee) : participant;
     const allowedFallbacks = new Set([fallbackPet.model || null, fallbackPet.fallbackModel || null]);
     const fallbackModel = allowedFallbacks.has(raw.fallbackModel || null) ? (raw.fallbackModel || null) : (fallbackPet.fallbackModel || fallbackPet.model || null);
+    // Some routed models return semantically correct plans with common field
+    // aliases even when an output schema was supplied. Normalize those aliases
+    // before persistence so a visible `description` or `operation: write` is
+    // never silently discarded when the user confirms the plan.
+    const brief = String(raw.brief || raw.description || '');
+    const requestedMode = raw.mode || raw.operation;
+    const mode = ['read', 'write', 'verify'].includes(requestedMode) ? requestedMode : 'read';
+    const deliverables = Array.isArray(raw.deliverables) && raw.deliverables.length
+      ? raw.deliverables.map(String).slice(0, 30)
+      : ['完成任务说明中列出的交付内容，并在报告中列明产物路径'];
+    const validation = Array.isArray(raw.validation) && raw.validation.length
+      ? raw.validation.map(String).slice(0, 30)
+      : ['核对任务说明、文件范围与依赖结论，报告完成情况和未解决问题'];
     return {
-      id, title: String(raw.title || id).slice(0, 120), brief: String(raw.brief || ''), assigneePetId: raw.assigneePetId,
+      id, title: String(raw.title || id).slice(0, 120), brief, assigneePetId: raw.assigneePetId,
       assigneeName: participant.name, model: participant.model || null, fallbackAssignee, fallbackModel,
       dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(String) : [],
-      mode: ['read', 'write', 'verify'].includes(raw.mode) ? raw.mode : 'read',
+      mode,
       fileScopes: Array.isArray(raw.fileScopes) ? raw.fileScopes.map(String).slice(0, 50) : [],
-      deliverables: Array.isArray(raw.deliverables) ? raw.deliverables.map(String).slice(0, 30) : [],
-      validation: Array.isArray(raw.validation) ? raw.validation.map(String).slice(0, 30) : [],
+      deliverables,
+      validation,
       required: raw.required !== false, status: 'blocked', attempts: 0, threadId: null,
       report: null, review: null, changeSet: null, error: null,
     };
@@ -80,7 +123,7 @@ function validatePlan(rawPlan, participants) {
   tasks.forEach(depth);
   const hasRequiredSink = tasks.some(task => task.required && !tasks.some(other => other.dependsOn.includes(task.id)));
   if (!hasRequiredSink) throw new Error('计划缺少必需的终态交付任务。');
-  return { objective: String(rawPlan.objective || ''), assumptions: Array.isArray(rawPlan.assumptions) ? rawPlan.assumptions.map(String) : [], tasks };
+  return { objective: String(rawPlan.objective || rawPlan.goal || ''), assumptions: Array.isArray(rawPlan.assumptions) ? rawPlan.assumptions.map(String) : [], tasks };
 }
 
 function publicTaskStatus(status) {
@@ -198,6 +241,32 @@ class MissionManager {
     return ids;
   }
 
+  threadOwner(threadId) {
+    if (!threadId) return null;
+    for (const mission of this.missions.values()) {
+      if (mission.supervisorThreadId === threadId) {
+        return {
+          missionId: mission.id,
+          status: mission.status,
+          role: 'supervisor',
+          locked: !TERMINAL.has(mission.status),
+        };
+      }
+      for (const task of mission.tasks || []) {
+        if (task.threadId !== threadId) continue;
+        return {
+          missionId: mission.id,
+          taskId: task.id,
+          status: mission.status,
+          taskStatus: task.status,
+          role: 'worker',
+          locked: ['ready', 'queued', 'running', 'reviewing', 'retrying'].includes(task.status),
+        };
+      }
+    }
+    return null;
+  }
+
   transition(mission, status, type, data = {}) {
     this.flushProgress(mission);
     mission.status = status;
@@ -257,7 +326,10 @@ class MissionManager {
     if (!mission || !['awaiting_confirmation', 'needs_input'].includes(mission.status)) return { ok: false, error: '当前 Mission 不能重新规划。' };
     this.transition(mission, 'planning', 'mission.replanning');
     const operation = this.beginOperation(mission);
-    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+    // Replanning is a complete plan replacement. Start a fresh supervisor
+    // thread so an opened Codex Desktop task cannot retain the active-writer
+    // lock and block Mission recovery.
+    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal });
     if (!this.current(mission, operation)) return this.stoppedResult(mission);
     mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
     if (!result.ok) { mission.error = result.error; this.transition(mission, 'needs_input', 'mission.plan_failed', { error: result.error }); return { ok: false, error: result.error, mission: this.publicMission(mission) }; }
@@ -397,13 +469,14 @@ class MissionManager {
       try {
         const rawReport = fs.readFileSync(resultPath, 'utf8');
         const parsedReport = this.planner.parseStructuredOutput ? this.planner.parseStructuredOutput(rawReport) : JSON.parse(rawReport);
-        task.report = sanitizeValue(parsedReport);
+        task.report = sanitizeValue(normalizeWorkerReport(parsedReport, task));
         fs.writeFileSync(path.join(artifactDir, 'report.json'), JSON.stringify(task.report, null, 2), 'utf8');
       }
       catch (error) { task.status = 'failed'; task.error = '工作者报告解析失败: ' + error.message; }
     }
     if (task.status === 'succeeded') {
       task.changeSet = this.workspace.collect(mission, task, artifactDir);
+      task.report.changedFiles = task.changeSet.changes.map(change => change.path);
       for (const message of task.report.messages || []) this.store.message(mission, { ...message, from: task.assigneePetId, taskId: task.id });
       this.store.message(mission, { from: task.assigneePetId, to: 'supervisor', taskId: task.id, type: 'result', summary: task.report.summary, artifactRefs: task.report.artifacts });
     }
@@ -583,4 +656,4 @@ class MissionManager {
   }
 }
 
-module.exports = { MissionManager, validatePlan, publicTaskStatus, WORKER_SCHEMA, TERMINAL };
+module.exports = { MissionManager, validatePlan, normalizeWorkerReport, publicTaskStatus, WORKER_SCHEMA, TERMINAL };

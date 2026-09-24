@@ -3,11 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { log } = require('./config');
+const { httpProviderArgs } = require('./codex-transport');
 const running = new Set();
 
 const PLAN_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['objective', 'tasks'],
+  // Responses strict structured output requires every declared property to
+  // appear in required. Optional values must be nullable instead.
+  required: ['objective', 'assumptions', 'tasks'],
   properties: {
     objective: { type: 'string' },
     assumptions: { type: 'array', items: { type: 'string' } },
@@ -15,7 +18,7 @@ const PLAN_SCHEMA = {
       type: 'array', minItems: 1,
       items: {
         type: 'object', additionalProperties: false,
-        required: ['id', 'title', 'brief', 'assigneePetId', 'dependsOn', 'mode', 'fileScopes', 'deliverables', 'validation', 'required'],
+        required: ['id', 'title', 'brief', 'assigneePetId', 'fallbackAssignee', 'fallbackModel', 'dependsOn', 'mode', 'fileScopes', 'deliverables', 'validation', 'required'],
         properties: {
           id: { type: 'string' }, title: { type: 'string' }, brief: { type: 'string' }, assigneePetId: { type: 'string' },
           fallbackAssignee: { type: ['string', 'null'] }, fallbackModel: { type: ['string', 'null'] },
@@ -37,7 +40,7 @@ const REVIEW_SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        required: ['taskId', 'decision', 'reason'],
+        required: ['taskId', 'decision', 'reason', 'nextBrief', 'nextAssignee', 'nextModel'],
         properties: {
           taskId: { type: 'string' }, decision: { type: 'string', enum: ['accept', 'retry', 'reassign', 'fail', 'skip'] },
           reason: { type: 'string' }, nextBrief: { type: ['string', 'null'] }, nextAssignee: { type: ['string', 'null'] }, nextModel: { type: ['string', 'null'] },
@@ -87,11 +90,16 @@ function splitTask({ projectDir, text, participants }) {
       String(text || ''),
     ].join('\n');
     try { fs.writeFileSync(reqPath, inst, 'utf8'); } catch (e) { log('planner write: ' + e.message); return resolve(null); }
-    const args = ['/c', 'codex', 'exec', '--json', '--skip-git-repo-check', '-C', projectDir, '--sandbox', 'read-only', '-o', outPath,
-      'Read ' + stamp + '.request.md in the tasks folder and follow its instructions exactly. Your entire final output must be only the JSON array it specifies.'];
+    // cmd.exe truncates arguments at the first newline, so instructions are
+    // always piped through stdin instead of the command line.
+    const instruction = 'Read ' + stamp + '.request.md in the tasks folder and follow its instructions exactly. Your entire final output must be only the JSON array it specifies.';
+    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs(), '--json', '--skip-git-repo-check', '-C', projectDir, '--sandbox', 'read-only', '-o', outPath, '-'];
     let child;
     try {
-      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+      child.stdin.on('error', () => {});
+      child.stdin.write(instruction, 'utf8');
+      child.stdin.end();
     } catch (e) { return resolve(null); }
     running.add(child);
     const timer = setTimeout(() => stopChild(child), 180000);
@@ -112,6 +120,20 @@ function splitTask({ projectDir, text, participants }) {
 
 function threadIdFromEvent(obj) {
   return obj && (obj.thread_id || obj.session_id || (obj.thread && obj.thread.id) || (obj.msg && (obj.msg.thread_id || obj.msg.id)));
+}
+
+function errorFromEvent(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const type = String(obj.type || obj.method || '').toLowerCase();
+  const item = obj.item || (obj.params && obj.params.item) || {};
+  if (type === 'error' && obj.message) return String(obj.message);
+  if ((type.includes('turn.failed') || type.includes('turn/failed')) && obj.error) return String(obj.error.message || obj.error);
+  if (String(item.type || '').toLowerCase() === 'error' && item.message) return String(item.message);
+  return null;
+}
+
+function compactError(value, limit = 2000) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
 function parseStructuredOutput(raw) {
@@ -138,23 +160,35 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     fs.writeFileSync(promptPath, prompt, 'utf8');
     fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
     const instruction = prompt + '\n\nReturn only the JSON object required by the output schema.';
-    const args = ['/c', 'codex', 'exec'];
+    const args = ['/d', '/s', '/c', 'codex', 'exec'];
     if (threadId) {
-      args.push('resume', '--json', '--output-schema', schemaPath, '-o', outPath);
+      // `codex exec resume` does not expose --sandbox, so force the equivalent
+      // config value. Without it a resumed supervisor inherits the user's
+      // global sandbox and can modify the main project during review.
+      args.push('resume', ...httpProviderArgs(), '-c', 'sandbox_mode=read-only', '--json', '--skip-git-repo-check', '--output-schema', schemaPath, '-o', outPath);
       if (model) args.push('-m', model);
-      args.push(threadId, instruction);
+      args.push(threadId, '-');
     } else {
-      args.push('--json', '--skip-git-repo-check', '--thread-source', 'pet-office-supervisor', '-C', projectDir, '--sandbox', 'read-only', '--output-schema', schemaPath, '-o', outPath);
+      args.push(...httpProviderArgs(), '--json', '--skip-git-repo-check', '--thread-source', 'pet-office-supervisor', '-C', projectDir, '--sandbox', 'read-only', '--output-schema', schemaPath, '-o', outPath);
       if (model) args.push('-m', model);
-      args.push(instruction);
+      args.push('-');
     }
     let child;
-    try { child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch (error) { return resolve({ ok: false, error: error.message, threadId: threadId || null }); }
+    try {
+      child = spawn('cmd.exe', args, { cwd: projectDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      // The full prompt is piped via stdin: cmd.exe would otherwise cut it at
+      // the first newline, so the multi-line plan prompt reached codex as only
+      // its first heading. That is why planning failed with no parseable JSON
+      // and the opened supervisor session contained just two characters.
+      child.stdin.on('error', () => {});
+      child.stdin.write(instruction, 'utf8');
+      child.stdin.end();
+    } catch (error) { return resolve({ ok: false, error: error.message, threadId: threadId || null }); }
     running.add(child);
     let buffer = '';
     let foundThreadId = threadId || null;
     let stderr = '';
+    let eventError = '';
     let settled = false;
     const finish = value => {
       if (settled) return;
@@ -173,7 +207,11 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop();
       for (const line of lines) {
-        try { foundThreadId = threadIdFromEvent(JSON.parse(line)) || foundThreadId; } catch {}
+        try {
+          const event = JSON.parse(line);
+          foundThreadId = threadIdFromEvent(event) || foundThreadId;
+          eventError = errorFromEvent(event) || eventError;
+        } catch {}
       }
     });
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4000); });
@@ -187,16 +225,41 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     }
     child.on('exit', code => {
       if (settled) return;
-      if (code !== 0) return finish({ ok: false, error: stderr.trim() || ('Codex exit ' + code), threadId: foundThreadId });
+      if (buffer.trim()) {
+        try {
+          const event = JSON.parse(buffer);
+          foundThreadId = threadIdFromEvent(event) || foundThreadId;
+          eventError = errorFromEvent(event) || eventError;
+        } catch {}
+      }
+      if (code !== 0) return finish({
+        ok: false,
+        error: compactError(eventError) || compactError(stderr) || ('Codex exit ' + code),
+        threadId: foundThreadId,
+      });
       try {
         const value = parseStructuredOutput(fs.readFileSync(outPath, 'utf8'));
         return finish({ ok: true, value, threadId: foundThreadId, outputPath: outPath });
       } catch (error) {
-        return finish({ ok: false, error: '结构化输出解析失败: ' + error.message, threadId: foundThreadId });
+        let sample = '';
+        try { sample = fs.readFileSync(outPath, 'utf8').replace(/\s+/g, ' ').slice(0, 160); } catch {}
+        return finish({ ok: false, error: '结构化输出解析失败: ' + error.message + (sample ? '；模型输出开头: ' + sample : ''), threadId: foundThreadId });
       }
     });
     child.on('error', error => finish({ ok: false, error: error.message, threadId: foundThreadId }));
   });
+}
+
+function recoverableSupervisorThreadError(error) {
+  return /already has an active writer|thread-source conflict|failed to initialize thread persistence|(?:session|thread).*\barchived\b/i.test(String(error || ''));
+}
+
+async function runSupervisorStructured(options) {
+  const result = await runStructured(options);
+  if (result.ok || result.cancelled || !options.threadId || !recoverableSupervisorThreadError(result.error)) return result;
+  const fresh = await runStructured({ ...options, kind: options.kind + '-fresh', threadId: null });
+  if (!fresh.ok && !fresh.cancelled) fresh.error = '原主管任务正被占用或已不可续接，创建新主管任务后仍失败：' + fresh.error;
+  return fresh;
 }
 
 function planMission({ projectDir, missionDir, objective, participants, supervisorModel, threadId, signal }) {
@@ -207,12 +270,13 @@ function planMission({ projectDir, missionDir, objective, participants, supervis
     '# 已获用户允许的参与者与模型', JSON.stringify(roster, null, 2),
     '# 规则',
     '- assigneePetId、fallbackAssignee 只能来自参与者 petId；fallbackModel 只能使用相应参与者已列出的 model 或 fallbackModel。',
+    '- 每个任务必须使用 brief、mode、deliverables、validation 字段；不要改写为 description、operation 或其他别名。',
     '- 最多为每位工作者安排一个同时执行的节点；任务可按依赖分波次。',
     '- 写入任务要给出尽量精确的 fileScopes；只读分析使用 read，核验使用 verify。',
     '- dependsOn 只能引用本计划中其他任务 id，禁止循环依赖。',
     '- 至少一个 required=true 的终态交付任务。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'plan', prompt, schema: PLAN_SCHEMA, model: supervisorModel, threadId, signal });
+  return runSupervisorStructured({ projectDir, missionDir, kind: 'plan', prompt, schema: PLAN_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
 function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, threadId, signal }) {
@@ -228,8 +292,10 @@ function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, t
     '# 决策规则',
     '- 成功且充分：accept。', '- 可通过修改简报再次尝试：retry。', '- 需要换已确认参与者：reassign。',
     '- 不可恢复：fail。', '- 非必需且无需继续：skip。', '- 每个 taskId 必须且只能出现一次。',
+    '- 这是只读复核：禁止调用写入工具、禁止修改主项目，只能根据提供的报告和变更清单作出决定。',
+    '- nextBrief、nextAssignee、nextModel 不适用时必须返回 null。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId, signal });
+  return runSupervisorStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
 function finalReview({ projectDir, missionDir, mission, supervisorModel, threadId, signal }) {
@@ -238,8 +304,9 @@ function finalReview({ projectDir, missionDir, mission, supervisorModel, threadI
     '# 任务', '对整个 Mission 做最终复核。不要拼接工作者原文，要判断目标是否实现、验证是否可信、剩余风险是什么。',
     '# Mission 目标', mission.objective, '# 节点结果', JSON.stringify(tasks, null, 2),
     '# 判定', '全部必需交付可用为 pass；存在可用成果但有非致命缺失为 partial；没有可用成果或关键验证失败为 fail。',
+    '# 安全边界', '这是只读复核。禁止调用写入工具、禁止复制产物、禁止修改主项目；安全回写只能由 Pet Office 在复核结束后执行。',
   ].join('\n\n');
-  return runStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal });
+  return runSupervisorStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal });
 }
 
 function shutdown() {
@@ -247,4 +314,4 @@ function shutdown() {
   running.clear();
 }
 
-module.exports = { splitTask, planMission, reviewWave, finalReview, runStructured, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA };
+module.exports = { splitTask, planMission, reviewWave, finalReview, runStructured, runSupervisorStructured, recoverableSupervisorThreadError, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: { errorFromEvent, compactError } };
