@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { MissionManager } = require('../src/mission-manager');
+const { FakeRufloAdapter } = require('../src/ruflo-adapter');
 const { MissionStore } = require('../src/mission-store');
 const { CodexSessionMonitor, _internals: { redact } } = require('../src/session-monitor');
 const { ingestFilesAsync, ingestFiles } = require('../src/inbox');
@@ -25,9 +26,9 @@ function fixture(planner = {}) {
   const manager = new MissionManager({
     runtimeRoot: root, projects: () => [{ id: 'p', name: 'test', path: root }],
     roster: () => [{ id: 'w1', name: 'worker', model: 'allowed' }],
-    supervisorModel: () => null, planner, dispatcher: { cancel: noop },
+    supervisorModel: () => null, planner, dispatcher: { cancel: noop }, ruflo: new FakeRufloAdapter(),
   });
-  manager.store = { create: noop, save: noop, event: noop, message: noop, review: noop, missionDir: () => root };
+  manager.store = { create: noop, save: noop, event: noop, message: noop, messages: () => [], review: noop, missionDir: () => root };
   manager.supervisorRuntime = () => root;
   return manager;
 }
@@ -69,7 +70,8 @@ function clientFixture() {
     const d = deferred(); let signal;
     const m = fixture({ planMission: args => { signal = args.signal; return d.promise; } });
     const pending = m.createDraft({ taskText: 'test', projectId: 'p', participants: [{ petId: 'w1', use: true }] });
-    const id = [...m.missions.keys()][0]; m.cancel(id);
+    while (!m.missions.size) await delay(0);
+    const id = [...m.missions.keys()][0]; await m.cancel(id);
     d.resolve({ ok: true, value: { tasks: [{ id: 'a', assigneePetId: 'w1', dependsOn: [], required: true }] } });
     assert.equal((await pending).ok, false);
     assert.equal(m.get(id).status, 'cancelled'); assert(signal.aborted);

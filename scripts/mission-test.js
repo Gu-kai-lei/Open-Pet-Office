@@ -6,7 +6,8 @@ const os = require('os');
 const path = require('path');
 const { MissionStore } = require('../src/mission-store');
 const { MissionWorkspace, changedFiles, matchesScope } = require('../src/mission-workspace');
-const { MissionManager, validatePlan, normalizeWorkerReport, WORKER_SCHEMA } = require('../src/mission-manager');
+const { MissionManager, validatePlan, normalizeWorkerReport, effectiveReviewDecision, WORKER_SCHEMA } = require('../src/mission-manager');
+const { FakeRufloAdapter } = require('../src/ruflo-adapter');
 const { parseStructuredOutput, recoverableSupervisorThreadError, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: plannerInternals } = require('../src/planner');
 const { spawnSync } = require('child_process');
 
@@ -33,13 +34,16 @@ assert.equal(plannerInternals.errorFromEvent({ type: 'turn.failed', error: { mes
 assert.deepEqual(normalizeWorkerReport({
   file_path: 'deliverables/a.txt', written_content: 'A', validation_result: '通过', status: 'passed', reason: 'done',
 }, {}).outcome, 'success');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, report: { outcome: 'failed' } }, { decision: 'accept', reason: '模型误判' }).decision, 'retry');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 2, report: { outcome: 'failed' } }, { decision: 'accept', reason: '模型误判' }).decision, 'fail');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, report: { outcome: 'success' } }, null).decision, 'accept');
 
 function rawPlan() {
   return {
     objective: '完成两阶段变更', assumptions: [],
     tasks: [
-      { id: 'analysis', title: '分析', brief: '分析项目', assigneePetId: 'w1', fallbackAssignee: 'w2', fallbackModel: null, dependsOn: [], mode: 'write', fileScopes: ['a.txt'], deliverables: ['a.txt'], validation: [], required: true },
-      { id: 'verify', title: '核验', brief: '核验并补充', assigneePetId: 'w2', fallbackAssignee: 'w1', fallbackModel: null, dependsOn: ['analysis'], mode: 'write', fileScopes: ['b.txt'], deliverables: ['b.txt'], validation: [], required: true },
+      { id: 'analysis', title: '分析', brief: '分析项目', role: 'coder', modelReason: '适合实现', assigneePetId: 'w1', fallbackAssignee: 'w2', fallbackModel: null, dependsOn: [], mode: 'write', fileScopes: ['a.txt'], deliverables: ['a.txt'], validation: [], required: true },
+      { id: 'verify', title: '核验', brief: '核验并补充', role: 'tester', modelReason: '适合测试', assigneePetId: 'w2', fallbackAssignee: 'w1', fallbackModel: null, dependsOn: ['analysis'], mode: 'write', fileScopes: ['b.txt'], deliverables: ['b.txt'], validation: [], required: true },
     ],
   };
 }
@@ -165,6 +169,7 @@ manager = new MissionManager({
   runtimeRoot: path.join(root, 'manager-runtime'), projects: () => [{ id: 'p1', name: '测试项目', path: project }],
   roster: () => [{ id: 'supervisor', name: '主管', model: null }, { id: 'w1', name: '甲', model: null }, { id: 'w2', name: '乙', model: null }],
   supervisorModel: () => null, planner, dispatcher,
+  ruflo: new FakeRufloAdapter(),
 });
 
 (async () => {
@@ -177,7 +182,7 @@ manager = new MissionManager({
   const replanned = await manager.regenerate(draft.mission.id);
   assert(replanned.ok);
   assert.deepEqual(planThreadIds, [null, null], 'replanning must create a fresh supervisor thread');
-  assert(manager.confirm(replanned.mission.id).ok);
+  assert((await manager.confirm(replanned.mission.id)).ok);
   const limit = Date.now() + 6000;
   while (Date.now() < limit && !['completed', 'failed', 'needs_input'].includes(manager.get(draft.mission.id).status)) await new Promise(resolve => setTimeout(resolve, 20));
   const result = manager.get(draft.mission.id);

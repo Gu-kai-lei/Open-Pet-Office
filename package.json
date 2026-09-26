@@ -1,7 +1,7 @@
 {
   "name": "open-pet-office",
   "productName": "Pet Office",
-  "version": "0.14.12",
+  "version": "0.15.0",
   "description": "电子办公室：多模型协作桌宠（Codex + DeepSeek，经 OpenCodex 路由）",
   "author": "Gu-kai-lei",
   "keywords": [
@@ -27,7 +27,8 @@
   "scripts": {
     "start": "electron .",
     "check": "node scripts/check.js",
-    "test": "npm run check && node scripts/session-monitor-test.js && node scripts/activity-state-test.js && node scripts/inbox-test.js && node scripts/conversation-recovery-test.js && node scripts/appserver-progress-test.js && node scripts/stability-test.js && node scripts/mission-test.js && node scripts/v012-test.js && node scripts/v013-test.js && node scripts/v0131-test.js && node scripts/v0132-test.js && node scripts/v0133-test.js && node scripts/reliability-test.js && node scripts/workspace-ui-test.js && node scripts/prompt-pipe-test.js && node scripts/transport-test.js",
+    "test": "npm run check && node scripts/session-monitor-test.js && node scripts/activity-state-test.js && node scripts/inbox-test.js && node scripts/conversation-recovery-test.js && node scripts/appserver-progress-test.js && node scripts/stability-test.js && node scripts/ruflo-adapter-test.js && node scripts/mission-test.js && node scripts/v012-test.js && node scripts/v013-test.js && node scripts/v0131-test.js && node scripts/v0132-test.js && node scripts/v0133-test.js && node scripts/reliability-test.js && node scripts/workspace-ui-test.js && node scripts/prompt-pipe-test.js && node scripts/transport-test.js",
+    "test:ruflo-contract": "node scripts/ruflo-contract-test.js",
     "dist": "electron-builder --win portable"
   },
   "license": "MIT",

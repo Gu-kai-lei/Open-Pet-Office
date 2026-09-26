@@ -81,7 +81,10 @@ assert.ok(source.includes("const ACTIVE_MISSION_STATUSES = new Set"), 'Mission o
 assert.ok(source.includes("mission.supervisorThreadId && !active"), 'active supervisor threads must not expose a Codex open button');
 assert.ok(source.includes("openMissionDetails(missionId)"), 'live Mission cards must open their in-app record');
 assert.ok(source.includes("result.code === 'ACTIVE_MISSION'"), 'stale Mission thread links must fall back to in-app records');
-assert.ok(source.includes('Mission 结束前由 Pet Office 持有主管任务'), 'the UI must explain Mission thread ownership');
+assert.ok(source.includes('任务由 Pet Office 与 Ruflo 协同持有'), 'the UI must explain Mission thread ownership');
+assert.ok(source.includes('showRufloSetup'), 'delegation must expose the Ruflo setup wizard');
+assert.ok(source.includes('复制为 Ruflo 任务'), 'legacy Missions must expose a Ruflo clone action');
+assert.ok(source.includes('高级详情与诊断'), 'Mission cards must expose advanced Ruflo diagnostics');
 assert.ok(source.includes('missionFinalHtml(mission.finalReview)'), 'completed Mission cards must render the readable final review block');
 assert.ok(source.includes('mission-verdict'), 'final review verdict must be shown as a labeled badge');
 assert.ok(source.includes('mission-risks'), 'final review risks must be rendered as a list');

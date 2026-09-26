@@ -5,7 +5,7 @@ const path = require('path');
 const { MissionStore, sanitizeValue } = require('./mission-store');
 const { MissionWorkspace } = require('./mission-workspace');
 
-const TERMINAL = new Set(['completed', 'partially_succeeded', 'failed', 'cancelled']);
+const TERMINAL = new Set(['completed', 'partial', 'partially_succeeded', 'failed', 'cancelled']);
 const WORKER_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['outcome', 'summary', 'changedFiles', 'artifacts', 'validation', 'messages', 'blockers'],
@@ -120,6 +120,12 @@ function validatePlan(rawPlan, participants) {
     return {
       id, title: String(raw.title || id).slice(0, 120), brief, assigneePetId: raw.assigneePetId,
       assigneeName: participant.name, model: participant.model || null, fallbackAssignee, fallbackModel,
+      role: ['coordinator', 'researcher', 'coder', 'tester', 'reviewer', 'analyst', 'writer'].includes(raw.role) ? raw.role
+        : (mode === 'verify' ? 'reviewer' : (mode === 'read' ? 'researcher' : 'coder')),
+      modelMode: participant.modelMode || 'auto',
+      requestedModel: participant.model || null,
+      actualModel: participant.model || null,
+      modelReason: String(raw.modelReason || (participant.modelMode === 'locked' ? '用户已锁定该桌宠模型' : '自动模式沿用该桌宠当前可用模型')).slice(0, 300),
       dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(value => resolveTaskReference(value, referenceAliases) || String(value).trim()) : [],
       mode,
       fileScopes: Array.isArray(raw.fileScopes) ? raw.fileScopes.map(String).slice(0, 50) : [],
@@ -150,8 +156,25 @@ function validatePlan(rawPlan, participants) {
   return { objective: String(rawPlan.objective || rawPlan.goal || ''), assumptions: Array.isArray(rawPlan.assumptions) ? rawPlan.assumptions.map(String) : [], tasks };
 }
 
+function effectiveReviewDecision(task, proposed) {
+  const eligible = task.status === 'succeeded' && task.report && task.report.outcome !== 'failed';
+  let decision = proposed || null;
+  if (!decision) {
+    decision = eligible
+      ? { decision: 'accept', reason: '主管未返回该节点的明确决策；本地报告门槛已通过。' }
+      : { decision: task.attempts < 2 ? 'retry' : 'fail', reason: '主管未返回该节点的明确决策，且工作者报告未通过本地成功门槛。' };
+  }
+  if (decision.decision === 'accept' && !eligible) {
+    decision = {
+      ...decision,
+      decision: task.attempts < 2 ? 'retry' : 'fail',
+      reason: '本地安全门槛拒绝接受失败或缺失的工作者报告。' + (decision.reason ? ' ' + decision.reason : ''),
+    };
+  }
+  return decision;
+}
 function publicTaskStatus(status) {
-  if (['accepted', 'completed', 'partially_succeeded'].includes(status)) return 'done';
+  if (['accepted', 'completed', 'partial', 'partially_succeeded'].includes(status)) return 'done';
   if (['failed', 'skipped'].includes(status)) return 'failed';
   if (status === 'cancelled') return 'cancelled';
   if (status === 'interrupted') return 'unknown';
@@ -159,13 +182,63 @@ function publicTaskStatus(status) {
   return 'running';
 }
 
+function routedModel(task, participant, models, recommendation) {
+  if (participant.modelMode === 'locked' && participant.model) return {
+    model: participant.model,
+    reason: '用户已锁定该桌宠模型',
+    source: 'user',
+  };
+  const available = (Array.isArray(models) ? models : []).filter(model => model && model.slug);
+  const bySlug = new Map(available.map(model => [String(model.slug).toLowerCase(), model]));
+  const suggested = recommendation && (
+    recommendation.recommendedModel || recommendation.model
+    || (recommendation.routing && recommendation.routing.model)
+  );
+  let selected = suggested && bySlug.get(String(suggested).toLowerCase());
+  const complexity = recommendation && recommendation.estimatedMetrics && recommendation.estimatedMetrics.complexity;
+  if (!selected && available.length) {
+    const score = model => {
+      const capabilities = model.capabilities || {};
+      let value = capabilities.code ? 20 : 0;
+      if (complexity === 'high') {
+        value += capabilities.speed === 'deliberate' ? 12 : 0;
+        value += capabilities.longContext ? 8 : 0;
+      } else if (complexity === 'low') {
+        value += capabilities.speed === 'fast' ? 15 : 0;
+        value += capabilities.cost === 'low' || capabilities.cost === 'free' ? 5 : 0;
+      }
+      else value += capabilities.speed === 'balanced' ? 10 : 0;
+      if (task.mode === 'read' && capabilities.longContext) value += 4;
+      return value;
+    };
+    selected = [...available].sort((a, b) => score(b) - score(a))[0];
+  }
+  if (selected) {
+    const role = recommendation && recommendation.primaryAgent && recommendation.primaryAgent.type;
+    return {
+      model: selected.slug,
+      reason: 'Ruflo 建议' + (complexity ? '按' + complexity + '复杂度' : '')
+        + (role ? '由 ' + role + ' 执行' : '') + '；已匹配本机可用模型 ' + (selected.name || selected.slug),
+      source: 'ruflo',
+    };
+  }
+  if (participant.model) return {
+    model: participant.model,
+    reason: 'Ruflo 路由未匹配到本机模型，使用桌宠备用模型',
+    source: 'pet',
+  };
+  return { model: null, reason: 'Ruflo 路由未匹配到本机模型，使用 Codex 默认模型', source: 'codex' };
+}
+
 class MissionManager {
-  constructor({ runtimeRoot, projects, roster, supervisorModel, planner, dispatcher, log = () => {}, onSnapshot = () => {}, onTaskEvent = () => {}, onDone = () => {} }) {
+  constructor({ runtimeRoot, projects, roster, supervisorModel, models = () => [], planner, dispatcher, ruflo = null, log = () => {}, onSnapshot = () => {}, onTaskEvent = () => {}, onDone = () => {} }) {
     this.projects = projects;
     this.roster = roster;
     this.supervisorModel = supervisorModel;
+    this.models = models;
     this.planner = planner;
     this.dispatcher = dispatcher;
+    this.ruflo = ruflo;
     this.log = log;
     this.onSnapshot = onSnapshot;
     this.onTaskEvent = onTaskEvent;
@@ -213,16 +286,26 @@ class MissionManager {
   publicMission(mission) {
     return sanitizeValue({
       id: mission.id, projectId: mission.projectId, projectName: mission.projectName, objective: mission.objective,
+      schemaVersion: mission.schemaVersion || 1, engine: mission.engine || 'legacy', legacy: !!mission.legacy,
+      rufloVersion: mission.rufloVersion || null, swarmId: mission.swarmId || null,
+      topology: mission.topology || null, strategy: mission.strategy || null, consensus: mission.consensus || null,
+      memoryNamespace: mission.memoryNamespace || null, syncCursor: mission.syncCursor || 0,
+      runtimeHealth: mission.runtimeHealth || null, memoryHits: mission.memoryHits || [],
       supervisorThreadId: mission.supervisorThreadId || null, status: mission.status, currentWave: mission.currentWave || 0,
       participants: mission.participants, plan: mission.plan ? { objective: mission.plan.objective, assumptions: mission.plan.assumptions } : null,
       tasks: (mission.tasks || []).map(task => ({
         id: task.id, missionId: mission.id, title: task.title, brief: task.brief, assigneePetId: task.assigneePetId,
-        assigneeName: task.assigneeName, model: task.model, fallbackAssignee: task.fallbackAssignee, fallbackModel: task.fallbackModel,
+        assigneeName: task.assigneeName, model: task.actualModel || task.model, requestedModel: task.requestedModel || null,
+        actualModel: task.actualModel || task.model || null, modelMode: task.modelMode || 'auto', modelReason: task.modelReason || null,
+        modelSource: task.modelSource || null, routeRecommendation: task.routeRecommendation || null,
+        role: task.role || null, rufloTaskId: task.rufloTaskId || null, rufloAgentId: task.rufloAgentId || null,
+        rufloStatus: task.rufloStatus || null, fallbackAssignee: task.fallbackAssignee, fallbackModel: task.fallbackModel,
         dependsOn: task.dependsOn, mode: task.mode, fileScopes: task.fileScopes, deliverables: task.deliverables,
         validation: task.validation, required: task.required, status: task.status, wave: task.wave, attempts: task.attempts,
         threadId: task.threadId || null, progress: task.progress || null, progressStage: task.progressStage || null,
         error: task.error || null, review: task.review || null, report: task.report ? { outcome: task.report.outcome, summary: task.report.summary } : null,
       })),
+      agents: mission.agents || [], messages: this.store.messages(mission, 80), memoryPublished: !!mission.memoryPublished,
       finalReview: mission.finalReview || null, pendingAction: mission.pendingAction || null,
       error: mission.error || null, createdAt: mission.createdAt, updatedAt: mission.updatedAt, finishedAt: mission.finishedAt || null,
     });
@@ -233,11 +316,11 @@ class MissionManager {
     for (const mission of this.missions.values()) {
       const supervisorStatus = ['awaiting_confirmation', 'needs_input'].includes(mission.status) ? 'waiting_input'
         : (mission.status === 'interrupted' ? 'unknown'
-          : (['completed', 'partially_succeeded'].includes(mission.status) ? 'done'
+            : (['completed', 'partial', 'partially_succeeded'].includes(mission.status) ? 'done'
             : (mission.status === 'failed' ? 'failed' : (mission.status === 'cancelled' ? 'cancelled' : 'running'))));
       output.push({
         id: mission.id + ':supervisor', missionId: mission.id, source: 'mission', petId: 'supervisor', petName: '主管',
-        model: this.supervisorModel(), brief: mission.objective,
+        model: mission.supervisorActualModel || this.supervisorModel(), brief: mission.objective,
         progress: mission.error || (mission.finalReview && mission.finalReview.summary) || ({ planning: '正在生成任务依赖计划', awaiting_confirmation: '计划已生成，等待确认', running: '正在协调当前执行阶段', reviewing: '正在检查工作者结果', needs_input: 'Mission 等待你的处理', interrupted: 'Mission 已中断，可检查后恢复' }[mission.status] || null),
         progressStage: mission.status === 'reviewing' ? 'finishing' : (['needs_input', 'interrupted'].includes(mission.status) ? 'warning' : 'thinking'),
         status: supervisorStatus, threadId: mission.supervisorThreadId || null, projectId: mission.projectId, projectName: mission.projectName,
@@ -246,7 +329,7 @@ class MissionManager {
       for (const task of mission.tasks || []) {
       output.push({
         id: mission.id + ':' + task.id, missionTaskId: task.id, missionId: mission.id, source: 'mission',
-        petId: task.assigneePetId, petName: task.assigneeName, model: task.model, brief: task.title || task.brief,
+        petId: task.assigneePetId, petName: task.assigneeName, model: task.actualModel || task.model, brief: task.title || task.brief,
         progress: task.progress || (task.review && task.review.reason) || null, progressStage: task.progressStage || (task.status === 'reviewing' ? 'finishing' : null),
         status: publicTaskStatus(task.status), threadId: task.threadId || null, projectId: mission.projectId, projectName: mission.projectName,
         startedAt: task.startedAt || mission.createdAt, updatedAt: task.updatedAt || mission.updatedAt, finishedAt: task.finishedAt || null,
@@ -295,24 +378,139 @@ class MissionManager {
     this.flushProgress(mission);
     mission.status = status;
     this.store.event(mission, type, data);
+    if (this.ruflo && !mission.legacy) {
+      try { this.ruflo.recordEvent(mission.projectId, type, { missionId: mission.id, status, ...data }); } catch {}
+    }
     this.store.save(mission);
     this.emit();
+  }
+
+  async registerRufloPlan(mission) {
+    if (!this.ruflo) throw new Error('Ruflo 适配器未初始化。');
+    mission.agents = Array.isArray(mission.agents) ? mission.agents : [];
+    if (!mission.agents.some(item => item.petId === 'supervisor')) {
+      const coordinator = await this.ruflo.spawnAgent(mission.projectId, {
+        agentId: 'po-' + mission.id + '-coordinator', role: 'coordinator', petId: 'supervisor',
+        swarmId: mission.swarmId, task: mission.objective,
+        requestedModel: this.supervisorModel(), actualModel: this.supervisorModel(), modelReason: '主管负责只读规划、复核与安全回写决策',
+      });
+      mission.coordinatorAgentId = coordinator.agentId || (coordinator.agent && coordinator.agent.id) || ('po-' + mission.id + '-coordinator');
+      mission.agents.push({
+        petId: 'supervisor', name: '主管', rufloAgentId: mission.coordinatorAgentId, role: 'coordinator',
+        modelMode: 'auto', requestedModel: this.supervisorModel(), actualModel: this.supervisorModel(),
+        modelReason: '主管负责只读规划、复核与安全回写决策', status: 'idle',
+      });
+    } else mission.coordinatorAgentId = mission.agents.find(item => item.petId === 'supervisor').rufloAgentId;
+    for (const participant of mission.participants) {
+      const firstTask = mission.tasks.find(task => task.assigneePetId === participant.petId);
+      const role = (firstTask && firstTask.role) || 'coder';
+      const existing = mission.agents.find(item => item.petId === participant.petId);
+      if (existing) {
+        existing.role = role;
+        existing.modelReason = firstTask && firstTask.modelReason;
+        existing.actualModel = firstTask && firstTask.actualModel || participant.model || null;
+        continue;
+      }
+      const agent = await this.ruflo.spawnAgent(mission.projectId, {
+        agentId: 'po-' + mission.id + '-' + participant.petId, role, petId: participant.petId,
+        swarmId: mission.swarmId, task: mission.objective,
+        requestedModel: participant.model || null, actualModel: firstTask && firstTask.actualModel || participant.model || null,
+        modelReason: firstTask && firstTask.modelReason,
+      });
+      const rufloAgentId = agent.agentId || (agent.agent && agent.agent.id) || ('po-' + mission.id + '-' + participant.petId);
+      mission.agents.push({
+        petId: participant.petId, name: participant.name, rufloAgentId, role,
+        modelMode: participant.modelMode || 'auto', requestedModel: participant.model || null,
+        actualModel: firstTask && firstTask.actualModel || participant.model || null, modelReason: firstTask && firstTask.modelReason, status: 'idle',
+      });
+    }
+    for (const task of mission.tasks) {
+      const agent = mission.agents.find(item => item.petId === task.assigneePetId);
+      task.rufloAgentId = agent && agent.rufloAgentId;
+      const created = await this.ruflo.createTask(mission.projectId, {
+        missionId: mission.id, localTaskId: task.id, description: task.title + '\n\n' + task.brief,
+        type: task.mode === 'read' ? 'research' : (task.mode === 'verify' ? 'bugfix' : 'feature'),
+        agentId: task.rufloAgentId, dependsOn: task.dependsOn,
+        tags: ['role:' + task.role, 'wave:' + task.wave],
+      });
+      task.rufloTaskId = created.taskId || created.id || (created.task && (created.task.taskId || created.task.id));
+      if (!task.rufloTaskId) throw new Error('Ruflo 未返回任务 ID：' + task.id);
+      task.rufloStatus = created.status || 'pending';
+    }
+    mission.runtimeHealth = { state: 'ready', checkedAt: Date.now(), version: mission.rufloVersion };
+    this.store.event(mission, 'ruflo.plan_registered', { swarmId: mission.swarmId, agents: mission.agents.length, tasks: mission.tasks.length });
+    this.store.save(mission);
+  }
+
+  async routeTaskModels(mission) {
+    const catalog = this.models();
+    for (const task of mission.tasks || []) {
+      const participant = mission.participants.find(item => item.petId === task.assigneePetId) || {};
+      let recommendation = null;
+      if (participant.modelMode !== 'locked') {
+        try {
+          recommendation = await this.ruflo.routeModel(mission.projectId, {
+            task: task.title + '\n' + task.brief,
+            context: 'role=' + task.role + '; mode=' + task.mode + '; deliverables=' + task.deliverables.join(', '),
+          });
+        } catch (error) { this.log('ruflo model route failed: ' + error.message); }
+      }
+      const routed = routedModel(task, participant, catalog, recommendation);
+      task.requestedModel = participant.modelMode === 'locked' ? (participant.model || null) : null;
+      task.actualModel = routed.model;
+      task.model = routed.model;
+      task.modelReason = routed.reason;
+      task.modelSource = routed.source;
+      task.routeRecommendation = recommendation ? {
+        role: recommendation.primaryAgent && recommendation.primaryAgent.type || task.role,
+        complexity: recommendation.estimatedMetrics && recommendation.estimatedMetrics.complexity || null,
+        confidence: recommendation.primaryAgent && recommendation.primaryAgent.confidence || null,
+      } : null;
+    }
+  }
+
+  async updateRufloTask(mission, task, patch) {
+    if (!this.ruflo || !task.rufloTaskId || mission.legacy) return null;
+    try {
+      const result = await this.ruflo.updateTask(mission.projectId, task.rufloTaskId, patch);
+      task.rufloStatus = patch.status || task.rufloStatus;
+      return result;
+    } catch (error) {
+      mission.runtimeHealth = { state: 'degraded', checkedAt: Date.now(), error: error.message };
+      this.log('ruflo task sync failed: ' + error.message);
+      return null;
+    }
   }
 
   async createDraft({ taskText, projectId, participants }) {
     const project = this.projects().find(item => item.id === projectId);
     if (!project) return { ok: false, error: '还没有项目。请先新建或选择一个项目。' };
     if (project.archived) return { ok: false, error: '这个项目已归档，请先恢复项目。' };
+    if (!this.ruflo) return { ok: false, code: 'RUFLO_UNAVAILABLE', error: 'Ruflo 运行时未初始化。' };
+    const health = await this.ruflo.health(project.id, { probe: true });
+    if (!health.ready) return {
+      ok: false, code: 'RUFLO_SETUP_REQUIRED',
+      error: '首次使用分工需要安装并检查 Ruflo 3.43.0。', setup: health,
+    };
     const allowedRoster = new Map(this.roster().map(item => [item.id, item]));
     const selected = (participants || []).filter(item => item.use && allowedRoster.has(item.petId)).slice(0, 4).map(item => {
       const pet = allowedRoster.get(item.petId);
-      return { petId: item.petId, name: item.name || pet.name, model: Object.prototype.hasOwnProperty.call(item, 'model') ? (item.model || null) : (pet.model || null), fallbackModel: item.fallbackModel || null };
+      return {
+        petId: item.petId, name: item.name || pet.name,
+        model: Object.prototype.hasOwnProperty.call(item, 'model') ? (item.model || null) : (pet.model || null),
+        modelMode: item.modelMode || pet.modelMode || ((item.model || pet.model) ? 'locked' : 'auto'),
+        fallbackModel: item.fallbackModel || pet.model || null,
+      };
     });
     if (!selected.length) return { ok: false, error: '至少选择一个工作者 Agent。' };
     const now = Date.now();
     const mission = {
-      schemaVersion: 1, id: missionId(), projectId: project.id, projectName: project.name, projectPath: project.path,
-      objective: String(taskText || '').trim(), status: 'planning', participants: selected, tasks: [], plan: null,
+      schemaVersion: 2, engine: 'ruflo', legacy: false, rufloVersion: '3.43.0',
+      id: missionId(), projectId: project.id, projectName: project.name, projectPath: project.path,
+      objective: String(taskText || '').trim(), status: 'setup', participants: selected, tasks: [], plan: null,
+      topology: 'hierarchical', strategy: 'specialized', consensus: 'raft', memoryMode: 'hybrid',
+      memoryNamespace: this.ruflo.namespace(project.id), memoryHits: [], syncCursor: 0, agents: [],
+      runtimeHealth: health,
       supervisorThreadId: null, currentWave: 0, retryCount: 0, finalReview: null, pendingAction: null,
       createdAt: now, updatedAt: now, eventSequence: 0, messageSequence: 0,
     };
@@ -321,9 +519,31 @@ class MissionManager {
     this.store.create(mission);
     this.emit();
     const operation = this.beginOperation(mission);
+    try {
+      const swarm = await this.ruflo.createSwarm(project.id, {
+        topology: mission.topology, strategy: mission.strategy, consensus: mission.consensus,
+        maxAgents: Math.min(5, selected.length + 1), memoryNamespace: mission.memoryNamespace,
+      });
+      mission.swarmId = swarm.swarmId || swarm.id;
+      if (!mission.swarmId) throw new Error('Ruflo 未返回 swarm ID。');
+      try {
+        mission.memoryHits = await this.ruflo.searchMemory(project.id, {
+          query: mission.objective, namespace: mission.memoryNamespace, limit: 5, threshold: 0.7,
+        });
+      } catch (error) {
+        mission.memoryHits = [];
+        this.log('ruflo memory search skipped: ' + error.message);
+      }
+      this.transition(mission, 'planning', 'ruflo.swarm_ready', { swarmId: mission.swarmId, memoryHits: mission.memoryHits.length });
+    } catch (error) {
+      mission.error = 'Ruflo swarm 创建失败：' + error.message;
+      mission.pendingAction = { kind: 'ruflo_runtime', action: 'repair' };
+      this.transition(mission, 'needs_input', 'ruflo.swarm_failed', { error: mission.error });
+      return { ok: false, code: 'RUFLO_RUNTIME_FAILED', mission: this.publicMission(mission), error: mission.error };
+    }
     const result = await this.planner.planMission({
       projectDir: project.path, missionDir: this.supervisorRuntime(mission), objective: mission.objective,
-      participants: selected, supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal,
+      participants: selected, memoryHits: mission.memoryHits, supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal,
     });
     if (!this.current(mission, operation)) return this.stoppedResult(mission);
     mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
@@ -335,6 +555,8 @@ class MissionManager {
     try {
       mission.plan = validatePlan(result.value, selected);
       mission.tasks = mission.plan.tasks;
+      await this.routeTaskModels(mission);
+      await this.registerRufloPlan(mission);
       this.store.message(mission, { from: 'supervisor', to: 'user', type: 'result', summary: '主管已生成 ' + mission.tasks.length + ' 个任务节点，等待确认。' });
       this.transition(mission, 'awaiting_confirmation', 'mission.plan_ready', { taskCount: mission.tasks.length });
       return { ok: true, mission: this.publicMission(mission) };
@@ -348,25 +570,41 @@ class MissionManager {
   async regenerate(id) {
     const mission = this.missions.get(id);
     if (!mission || !['awaiting_confirmation', 'needs_input'].includes(mission.status)) return { ok: false, error: '当前 Mission 不能重新规划。' };
+    if (mission.legacy) return { ok: false, error: '旧版 Mission 不能恢复执行，请复制为 Ruflo 任务。' };
+    const obsolete = [...(mission.tasks || [])];
+    for (const task of obsolete) if (task.rufloTaskId) {
+      try { await this.ruflo.cancelTask(mission.projectId, task.rufloTaskId, 'replanned'); } catch {}
+    }
     this.transition(mission, 'planning', 'mission.replanning');
     const operation = this.beginOperation(mission);
     // Replanning is a complete plan replacement. Start a fresh supervisor
     // thread so an opened Codex Desktop task cannot retain the active-writer
     // lock and block Mission recovery.
-    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal });
+    const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, memoryHits: mission.memoryHits || [], supervisorModel: this.supervisorModel(), threadId: null, signal: operation.signal });
     if (!this.current(mission, operation)) return this.stoppedResult(mission);
     mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
     if (!result.ok) { mission.error = result.error; this.transition(mission, 'needs_input', 'mission.plan_failed', { error: result.error }); return { ok: false, error: result.error, mission: this.publicMission(mission) }; }
     try {
       mission.plan = validatePlan(result.value, mission.participants); mission.tasks = mission.plan.tasks; mission.error = null;
+      await this.routeTaskModels(mission);
+      await this.registerRufloPlan(mission);
       this.transition(mission, 'awaiting_confirmation', 'mission.plan_ready', { taskCount: mission.tasks.length });
       return { ok: true, mission: this.publicMission(mission) };
     } catch (error) { mission.error = error.message; this.transition(mission, 'needs_input', 'mission.plan_invalid', { error: error.message }); return { ok: false, error: error.message, mission: this.publicMission(mission) }; }
   }
 
-  confirm(id) {
+  async confirm(id) {
     const mission = this.missions.get(id);
     if (!mission || mission.status !== 'awaiting_confirmation') return { ok: false, error: 'Mission 不在等待确认状态。' };
+    if (mission.legacy) return { ok: false, error: '旧版 Mission 不能继续执行，请复制为 Ruflo 任务。' };
+    try {
+      for (const task of mission.tasks || []) await this.updateRufloTask(mission, task, { status: task.dependsOn.length ? 'blocked' : 'pending', progress: 0 });
+    } catch (error) {
+      mission.error = 'Ruflo 任务状态同步失败：' + error.message;
+      mission.pendingAction = { kind: 'ruflo_runtime', action: 'diagnose' };
+      this.transition(mission, 'needs_input', 'ruflo.confirm_failed', { error: mission.error });
+      return { ok: false, error: mission.error, mission: this.publicMission(mission) };
+    }
     this.transition(mission, 'running', 'mission.confirmed');
     const operation = this.beginOperation(mission);
     this.run(mission, operation).catch(error => this.failMission(mission, error, operation));
@@ -427,11 +665,13 @@ class MissionManager {
       const retries = [];
       for (const task of pending) {
         if (task.status === 'cancelled' || task.status === 'interrupted') continue;
-        const decision = taskReferenceAliases(task.id).map(alias => decisionMap.get(alias)).find(Boolean)
-          || { decision: task.status === 'succeeded' ? 'accept' : 'fail', reason: '主管未返回该节点的明确决策。' };
+        const proposed = taskReferenceAliases(task.id).map(alias => decisionMap.get(alias)).find(Boolean);
+        const decision = effectiveReviewDecision(task, proposed);
         task.review = { ...decision, at: Date.now() };
         if (decision.decision === 'accept' && task.status === 'succeeded') {
           task.status = 'accepted'; accepted.push(task);
+          await this.ruflo.completeTask(mission.projectId, task.rufloTaskId, { outcome: task.report && task.report.outcome, summary: task.report && task.report.summary, validation: task.report && task.report.validation });
+          task.rufloStatus = 'completed';
         } else if (['retry', 'reassign'].includes(decision.decision) && task.attempts < 2) {
           task.status = 'retrying'; task.brief = decision.nextBrief || task.brief;
           if (decision.decision === 'reassign') {
@@ -442,15 +682,29 @@ class MissionManager {
               if (next.fallbackModel) allowed.add(next.fallbackModel);
               task.model = allowed.has(decision.nextModel) ? decision.nextModel
                 : (allowed.has(task.fallbackModel) ? task.fallbackModel : (next.model || null));
+              task.actualModel = task.model;
+              task.modelReason = '主管复核后改派给 ' + next.name + '，使用其允许的模型';
+              task.modelSource = 'review';
             }
           } else {
             const participant = mission.participants.find(item => item.petId === task.assigneePetId);
-            if (participant && decision.nextModel && [participant.model, participant.fallbackModel].includes(decision.nextModel)) task.model = decision.nextModel;
+            if (participant && decision.nextModel && [participant.model, participant.fallbackModel].includes(decision.nextModel)) {
+              task.model = decision.nextModel; task.actualModel = decision.nextModel;
+              task.modelReason = '主管复核要求重试并切换模型'; task.modelSource = 'review';
+            }
           }
+          const retried = await this.ruflo.retryTask(mission.projectId, task.rufloTaskId);
+          task.previousRufloTaskIds = [...(task.previousRufloTaskIds || []), task.rufloTaskId];
+          task.rufloTaskId = retried.taskId || retried.id || task.rufloTaskId;
+          task.rufloStatus = 'pending';
           retries.push(task); mission.retryCount = (mission.retryCount || 0) + 1;
         } else if (decision.decision === 'skip' && !task.required) task.status = 'skipped';
-        else { task.status = task.status === 'cancelled' ? 'cancelled' : 'failed'; task.error = decision.reason || task.error; }
+        else {
+          task.status = task.status === 'cancelled' ? 'cancelled' : 'failed'; task.error = decision.reason || task.error;
+          await this.updateRufloTask(mission, task, { status: task.status, progress: 100 });
+        }
         this.store.message(mission, { from: 'supervisor', to: task.assigneePetId, taskId: task.id, type: 'result', summary: decision.decision + '：' + (decision.reason || '') });
+        this.ruflo.sendMessage(mission.projectId, { missionId: mission.id, from: 'supervisor', to: task.assigneePetId, taskId: task.id, type: 'result', summary: decision.decision + '：' + (decision.reason || '') }).catch(error => this.log('ruflo message failed: ' + error.message));
       }
       const applied = this.workspace.applyAccepted(mission, accepted);
       if (!applied.ok) {
@@ -467,6 +721,7 @@ class MissionManager {
     if (!this.current(mission, operation) || task.status === 'cancelled') return;
     task.attempts = (task.attempts || 0) + 1;
     task.status = 'queued'; task.error = null; task.report = null; task.changeSet = null; task.updatedAt = Date.now();
+    await this.updateRufloTask(mission, task, { status: 'in_progress', progress: 0, assignTo: task.rufloAgentId ? [task.rufloAgentId] : [] });
     const workspace = this.workspace.prepareTask(mission, task);
     const artifactDir = path.join(this.store.missionDir(mission.projectPath, mission.id), 'artifacts', task.id, 'attempt-' + task.attempts);
     fs.mkdirSync(artifactDir, { recursive: true });
@@ -481,13 +736,22 @@ class MissionManager {
       '# 允许范围', task.fileScopes.join('\n') || '(未限定；仍只可在当前隔离工作区工作)',
       '# 交付物', task.deliverables.join('\n'), '# 验证要求', task.validation.join('\n') || '(如无法运行请在报告中说明)',
       '# 依赖结论', ...task.dependsOn.map(id => { const dep = mission.tasks.find(item => item.id === id); return '- ' + id + ': ' + ((dep && dep.report && dep.report.summary) || (dep && dep.status) || '未知'); }),
+      '# Ruflo 协作信息',
+      'swarm: ' + mission.swarmId,
+      'task: ' + task.rufloTaskId,
+      'role: ' + task.role,
+      'memory namespace: ' + mission.memoryNamespace,
+      '# 项目记忆（仅作参考）', JSON.stringify((mission.memoryHits || []).slice(0, 5), null, 2),
+      '# 最近团队消息', JSON.stringify(this.store.messages(mission, 20).filter(message => !message.to || [task.assigneePetId, 'all', 'supervisor'].includes(message.to)), null, 2),
     ].join('\n\n');
     const completion = new Promise(resolve => this.waiters.set(mission.id + ':' + task.id, resolve));
     this.store.message(mission, { from: 'supervisor', to: task.assigneePetId, taskId: task.id, type: 'context', summary: '开始执行：' + task.title });
+    this.ruflo.sendMessage(mission.projectId, { missionId: mission.id, from: 'supervisor', to: task.assigneePetId, taskId: task.id, type: 'context', summary: '开始执行：' + task.title }).catch(error => this.log('ruflo message failed: ' + error.message));
     this.dispatcher.startTask({
       id: mission.id + ':' + task.id, missionId: mission.id, petId: task.assigneePetId, petName: task.assigneeName,
       model: task.model, brief, projectDir: workspace, briefPath, resultPath, outputSchemaPath: schemaPath,
       skipLegacyDirs: true, threadSource: 'pet-office-worker',
+      rufloMcp: this.ruflo.workerMcpConfig(mission.projectId, mission.id, task.rufloTaskId),
       prompt: 'Complete the assigned work below only inside this isolated workspace. Return the final structured report required by the output schema.\n\n' + brief,
     });
     await completion;
@@ -498,6 +762,11 @@ class MissionManager {
         const rawReport = fs.readFileSync(resultPath, 'utf8');
         const parsedReport = this.planner.parseStructuredOutput ? this.planner.parseStructuredOutput(rawReport) : JSON.parse(rawReport);
         task.report = sanitizeValue(normalizeWorkerReport(parsedReport, task));
+        if (task.report.outcome === 'failed') {
+          task.status = 'failed';
+          task.error = (task.report.blockers && task.report.blockers.length)
+            ? task.report.blockers.join('；') : task.report.summary;
+        }
         fs.writeFileSync(path.join(artifactDir, 'report.json'), JSON.stringify(task.report, null, 2), 'utf8');
       }
       catch (error) { task.status = 'failed'; task.error = '工作者报告解析失败: ' + error.message; }
@@ -506,6 +775,7 @@ class MissionManager {
       task.changeSet = this.workspace.collect(mission, task, artifactDir);
       task.report.changedFiles = task.changeSet.changes.map(change => change.path);
       for (const message of task.report.messages || []) this.store.message(mission, { ...message, from: task.assigneePetId, taskId: task.id });
+      for (const message of task.report.messages || []) this.ruflo.sendMessage(mission.projectId, { ...message, missionId: mission.id, from: task.assigneePetId, taskId: task.id }).catch(error => this.log('ruflo message failed: ' + error.message));
       this.store.message(mission, { from: task.assigneePetId, to: 'supervisor', taskId: task.id, type: 'result', summary: task.report.summary, artifactRefs: task.report.artifacts });
     }
     this.store.save(mission); this.emit();
@@ -539,6 +809,10 @@ class MissionManager {
       task.finishedAt = now;
     }
     task.updatedAt = now;
+    if (event.type === 'started') this.updateRufloTask(mission, task, { status: 'in_progress', progress: 1 });
+    else if (event.type === 'progress') this.updateRufloTask(mission, task, { status: 'in_progress', progress: Math.min(95, Math.max(2, task.progressPercent || 10)) });
+    else if (event.type === 'failed') this.updateRufloTask(mission, task, { status: 'failed', progress: 100 });
+    else if (event.type === 'cancelled') this.ruflo.cancelTask(mission.projectId, task.rufloTaskId, task.error).catch(error => this.log('ruflo cancel failed: ' + error.message));
     if (event.type === 'progress' || event.type === 'usage') {
       if (!this.progressTimers.has(mission.id)) {
         this.progressTimers.set(mission.id, setTimeout(() => {
@@ -569,6 +843,18 @@ class MissionManager {
       return;
     }
     this.transition(mission, 'reviewing', 'mission.final_review_started');
+    mission.agents = Array.isArray(mission.agents) ? mission.agents : [];
+    if (!mission.reviewerAgentId) {
+      try {
+        const reviewer = await this.ruflo.spawnAgent(mission.projectId, {
+          agentId: 'po-' + mission.id + '-reviewer', role: 'reviewer', petId: 'supervisor',
+          swarmId: mission.swarmId, task: '只读复核 Mission 结果',
+          requestedModel: this.supervisorModel(), actualModel: this.supervisorModel(), modelReason: '最终复核使用主管模型并保持只读',
+        });
+        mission.reviewerAgentId = reviewer.agentId || reviewer.id || ('po-' + mission.id + '-reviewer');
+        mission.agents.push({ petId: 'supervisor', name: '独立复核', rufloAgentId: mission.reviewerAgentId, role: 'reviewer', actualModel: this.supervisorModel(), modelReason: '最终复核使用主管模型并保持只读', status: 'running' });
+      } catch (error) { this.log('ruflo reviewer registration failed: ' + error.message); }
+    }
     const review = await this.planner.finalReview({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), mission, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
     if (!this.current(mission, operation)) return;
     mission.supervisorThreadId = review.threadId || mission.supervisorThreadId;
@@ -588,6 +874,7 @@ class MissionManager {
       this.log('主管最终总结提交失败: ' + ((error && error.message) || error));
     }
     if (review.value.verdict === 'fail') { mission.finishedAt = Date.now(); this.transition(mission, 'failed', 'mission.failed', { reason: review.value.summary }); this.onDone(this.publicMission(mission)); return; }
+    this.transition(mission, 'integrating', 'mission.integration_started');
     const artifactDir = path.join(this.store.missionDir(mission.projectPath, mission.id), 'artifacts', 'integration');
     mission.finalChangeSet = this.workspace.finalChangeSet(mission, artifactDir);
     const preflight = this.workspace.preflightMain(mission, mission.finalChangeSet);
@@ -600,10 +887,24 @@ class MissionManager {
     if (!this.current(mission, this.operation(mission))) return;
     const result = this.workspace.applyFinal(mission, mission.finalChangeSet);
     mission.pendingAction = null; mission.finishedAt = Date.now(); mission.applyBackup = result.backup;
-    const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partially_succeeded' : 'completed';
+    const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partial' : 'completed';
     this.transition(mission, status, 'mission.completed', { verdict: mission.finalReview && mission.finalReview.verdict });
     this.workspace.cleanupSuccessful(mission);
     this.store.message(mission, { from: 'supervisor', to: 'user', type: 'result', summary: mission.finalReview ? mission.finalReview.summary : 'Mission 已完成。' });
+    if (this.ruflo && !mission.legacy) {
+      this.ruflo.storeMemory(mission.projectId, {
+        key: 'mission-' + mission.id + '-result', namespace: mission.memoryNamespace,
+        value: {
+          objective: mission.objective,
+          result: mission.finalReview && mission.finalReview.summary,
+          validation: mission.finalReview && mission.finalReview.validationSummary,
+          risks: mission.finalReview && mission.finalReview.risks,
+          artifacts: (mission.tasks || []).flatMap(task => (task.report && task.report.artifacts) || []).map(item => path.basename(String(item))),
+        },
+        tags: ['mission-result', 'verdict:' + ((mission.finalReview && mission.finalReview.verdict) || 'unknown')],
+      }).catch(error => this.log('ruflo memory store failed: ' + error.message));
+      this.ruflo.stopSwarm(mission.projectId, mission.swarmId).catch(error => this.log('ruflo swarm shutdown failed: ' + error.message));
+    }
     this.onDone(this.publicMission(mission));
   }
 
@@ -617,14 +918,14 @@ class MissionManager {
     }
     if (action === 'mark-resolved') {
       mission.pendingAction = null; mission.finishedAt = Date.now();
-      const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partially_succeeded' : 'completed';
+      const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partial' : 'completed';
       this.transition(mission, status, 'mission.manually_resolved');
       return { ok: true, mission: this.publicMission(mission) };
     }
     return { ok: false, error: '该冲突需要在项目中手动处理，然后选择“已处理”。' };
   }
 
-  cancel(id) {
+  async cancel(id) {
     const mission = this.missions.get(id);
     if (!mission || TERMINAL.has(mission.status)) return { ok: false, error: 'Mission 已结束。' };
     mission.status = 'cancelled'; mission.finishedAt = Date.now();
@@ -632,18 +933,29 @@ class MissionManager {
     if (operation) operation.abort();
     for (const task of mission.tasks || []) {
       if (['queued', 'running', 'reviewing', 'retrying'].includes(task.status)) this.dispatcher.cancel(mission.id + ':' + task.id);
+      if (this.ruflo && task.rufloTaskId) {
+        try { await this.ruflo.cancelTask(mission.projectId, task.rufloTaskId, '用户取消 Mission'); } catch (error) { this.log('ruflo task cancel failed: ' + error.message); }
+      }
       if (!['accepted', 'failed', 'skipped'].includes(task.status)) task.status = 'cancelled';
+    }
+    if (this.ruflo && mission.swarmId && !mission.legacy) {
+      try { await this.ruflo.stopSwarm(mission.projectId, mission.swarmId); } catch (error) {
+        mission.runtimeHealth = { state: 'degraded', error: error.message, checkedAt: Date.now() };
+      }
     }
     this.transition(mission, 'cancelled', 'mission.cancelled'); this.onDone(this.publicMission(mission));
     return { ok: true, mission: this.publicMission(mission) };
   }
 
-  cancelTask(id, taskIdValue) {
+  async cancelTask(id, taskIdValue) {
     const mission = this.missions.get(id); const task = mission && mission.tasks.find(item => item.id === taskIdValue);
     if (!task) return { ok: false, error: '找不到任务节点。' };
     if (TERMINAL.has(mission.status) || ['accepted', 'failed', 'skipped', 'cancelled'].includes(task.status)) return { ok: false, error: '任务节点已结束。' };
     task.status = 'cancelled'; task.finishedAt = Date.now();
     this.dispatcher.cancel(mission.id + ':' + task.id);
+    if (this.ruflo && task.rufloTaskId) {
+      try { await this.ruflo.cancelTask(mission.projectId, task.rufloTaskId, '用户取消任务节点'); } catch (error) { this.log('ruflo task cancel failed: ' + error.message); }
+    }
     for (const dependent of mission.tasks.filter(item => item.dependsOn.includes(task.id) && !['accepted', 'failed', 'cancelled'].includes(item.status))) dependent.status = 'blocked';
     this.store.event(mission, 'task.cancelled', { taskId: task.id }); this.store.save(mission); this.emit();
     return { ok: true, mission: this.publicMission(mission) };
@@ -652,10 +964,23 @@ class MissionManager {
   async resume(id) {
     const mission = this.missions.get(id);
     if (!mission || mission.status !== 'interrupted') return { ok: false, error: 'Mission 不在可恢复状态。' };
+    if (mission.legacy) return { ok: false, code: 'LEGACY_READ_ONLY', error: '旧版 Mission 仅供查看，请使用“复制为 Ruflo 任务”。' };
+    try {
+      const health = await this.ruflo.health(mission.projectId, { probe: true });
+      if (!health.ready) return { ok: false, code: 'RUFLO_SETUP_REQUIRED', error: 'Ruflo 运行时未就绪，无法恢复。', setup: health };
+      const reconciliation = await this.ruflo.reconcile(mission.projectId, mission);
+      mission.runtimeHealth = { state: reconciliation.ok ? 'ready' : 'reconciled', checkedAt: Date.now(), differences: reconciliation.differences };
+      this.store.event(mission, 'ruflo.reconciled', { differences: reconciliation.differences });
+    } catch (error) {
+      mission.error = 'Ruflo 对账失败：' + error.message;
+      mission.pendingAction = { kind: 'ruflo_runtime', action: 'diagnose' };
+      this.transition(mission, 'needs_input', 'ruflo.reconcile_failed', { error: mission.error });
+      return { ok: false, error: mission.error, mission: this.publicMission(mission) };
+    }
     const operation = this.beginOperation(mission);
     if (!mission.plan || !(mission.tasks || []).length) {
       this.transition(mission, 'planning', 'mission.planning_resumed');
-      const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
+      const result = await this.planner.planMission({ projectDir: mission.projectPath, missionDir: this.supervisorRuntime(mission), objective: mission.objective, participants: mission.participants, memoryHits: mission.memoryHits || [], supervisorModel: this.supervisorModel(), threadId: mission.supervisorThreadId, signal: operation.signal });
       if (!this.current(mission, operation)) return this.stoppedResult(mission);
       mission.supervisorThreadId = result.threadId || mission.supervisorThreadId;
       if (!result.ok) { mission.error = result.error; this.transition(mission, 'needs_input', 'mission.plan_failed', { error: result.error }); return { ok: false, error: result.error, mission: this.publicMission(mission) }; }
@@ -682,6 +1007,46 @@ class MissionManager {
     this.store.save(mission); this.emit();
   }
 
+  async cloneLegacy(id) {
+    const source = this.missions.get(id);
+    if (!source) return { ok: false, error: '找不到旧版 Mission。' };
+    if (!source.legacy) return { ok: false, error: '这个任务已经是 Ruflo Mission。' };
+    const roster = new Map(this.roster().map(item => [item.id, item]));
+    const participants = (source.participants || []).filter(item => roster.has(item.petId)).slice(0, 4).map(item => ({
+      petId: item.petId, name: item.name || roster.get(item.petId).name,
+      model: item.model || roster.get(item.petId).model || null,
+      modelMode: item.modelMode || roster.get(item.petId).modelMode || 'auto',
+      fallbackModel: item.fallbackModel || null, use: true,
+    }));
+    if (!participants.length) {
+      for (const item of [...roster.values()].filter(item => item.id !== 'supervisor').slice(0, 2)) participants.push({ petId: item.id, name: item.name, model: item.model || null, modelMode: item.modelMode || 'auto', use: true });
+    }
+    const constraints = source.plan && source.plan.assumptions && source.plan.assumptions.length
+      ? '\n\n旧任务中用户确认过的约束：\n- ' + source.plan.assumptions.join('\n- ')
+      : '';
+    return this.createDraft({ taskText: source.objective + constraints, projectId: source.projectId, participants });
+  }
+
+  async publishMemory(id) {
+    const mission = this.missions.get(id);
+    if (!mission || !['completed', 'partial', 'partially_succeeded'].includes(mission.status) || !mission.finalReview) return { ok: false, error: '只有已结束且有复核结果的 Ruflo Mission 可以发布通用经验。' };
+    if (mission.legacy) return { ok: false, error: '旧版 Mission 的未验证报告不能发布为通用经验。' };
+    await this.ruflo.storeMemory(mission.projectId, {
+      key: 'pattern-' + mission.id,
+      namespace: 'pet-office-patterns',
+      value: {
+        pattern: mission.finalReview.summary,
+        validation: mission.finalReview.validationSummary,
+        risks: mission.finalReview.risks,
+      },
+      tags: ['published-pattern', 'user-approved'],
+    });
+    mission.memoryPublished = true;
+    this.store.event(mission, 'memory.published', { namespace: 'pet-office-patterns' });
+    this.store.save(mission); this.emit();
+    return { ok: true, mission: this.publicMission(mission) };
+  }
+
   shutdown() {
     for (const mission of this.missions.values()) {
       this.flushProgress(mission);
@@ -696,4 +1061,4 @@ class MissionManager {
   }
 }
 
-module.exports = { MissionManager, validatePlan, normalizeWorkerReport, publicTaskStatus, WORKER_SCHEMA, TERMINAL };
+module.exports = { MissionManager, validatePlan, normalizeWorkerReport, effectiveReviewDecision, publicTaskStatus, WORKER_SCHEMA, TERMINAL };

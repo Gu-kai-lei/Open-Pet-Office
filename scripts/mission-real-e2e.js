@@ -3,11 +3,14 @@
 // Opt-in live smoke test. It spends real model requests and therefore is not
 // part of npm test. Usage: node scripts/mission-real-e2e.js <output-root>
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const planner = require('../src/planner');
 const dispatcher = require('../src/dispatcher');
 const { MissionManager } = require('../src/mission-manager');
+const { RufloRuntimeManager } = require('../src/ruflo-runtime');
+const { RufloAdapter } = require('../src/ruflo-adapter');
 
 const outputRoot = path.resolve(process.argv[2] || path.join(__dirname, '..', '.e2e-mission'));
 const supervisorModel = process.argv[3] || 'deepseek/deepseek-v4-flash';
@@ -17,6 +20,8 @@ const runRoot = path.join(outputRoot, 'run-' + Date.now().toString(36));
 const project = path.join(runRoot, 'project');
 const runtime = path.join(runRoot, 'runtime');
 const resultFile = path.join(runRoot, 'result.json');
+const rufloRuntime = new RufloRuntimeManager({ root: process.env.PET_OFFICE_RUFLO_ROOT || path.join(os.homedir(), '.pet-office', 'ruflo') });
+const ruflo = new RufloAdapter({ runtime: rufloRuntime });
 fs.mkdirSync(project, { recursive: true });
 
 function git(args) {
@@ -42,8 +47,13 @@ manager = new MissionManager({
     { id: 'w2', name: 'Beta Agent', model: workerTwoModel },
   ],
   supervisorModel: () => supervisorModel,
+  models: () => [
+    { slug: workerOneModel, name: workerOneModel, capabilities: { code: true, speed: 'balanced', longContext: true } },
+    { slug: workerTwoModel, name: workerTwoModel, capabilities: { code: true, speed: 'fast', longContext: false } },
+  ],
   planner,
   dispatcher,
+  ruflo,
   log: message => timeline.push({ at: Date.now(), log: String(message) }),
   onSnapshot: missions => {
     latest = missions[0] || latest;
@@ -69,8 +79,8 @@ async function main() {
     taskText: objective,
     projectId: 'e2e',
     participants: [
-      { petId: 'w1', name: 'Alpha Agent', model: workerOneModel, use: true },
-      { petId: 'w2', name: 'Beta Agent', model: workerTwoModel, use: true },
+      { petId: 'w1', name: 'Alpha Agent', model: workerOneModel, modelMode: 'locked', use: true },
+      { petId: 'w2', name: 'Beta Agent', model: workerTwoModel, modelMode: 'locked', use: true },
     ],
   });
   if (!draft.ok) throw new Error('planning failed: ' + draft.error);
@@ -78,13 +88,13 @@ async function main() {
   if (draft.mission.tasks.length !== 2 || !assignees.has('w1') || !assignees.has('w2')) {
     throw new Error('planner did not create the required two-agent plan: ' + JSON.stringify(draft.mission.tasks));
   }
-  const confirmed = manager.confirm(draft.mission.id);
+  const confirmed = await manager.confirm(draft.mission.id);
   if (!confirmed.ok) throw new Error('confirmation failed: ' + confirmed.error);
   const deadline = Date.now() + 12 * 60 * 1000;
   while (Date.now() < deadline) {
     const current = manager.get(draft.mission.id);
     latest = current;
-    if (['completed', 'partially_succeeded', 'failed', 'needs_input', 'cancelled'].includes(current.status)) break;
+    if (['completed', 'partial', 'failed', 'needs_input', 'cancelled'].includes(current.status)) break;
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   if (!latest || latest.status !== 'completed') throw new Error('Mission did not complete: ' + JSON.stringify(latest));
@@ -102,4 +112,5 @@ main().catch(error => {
 }).finally(() => {
   dispatcher.shutdown();
   planner.shutdown();
+  ruflo.shutdown();
 });

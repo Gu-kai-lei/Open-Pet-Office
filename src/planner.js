@@ -18,9 +18,11 @@ const PLAN_SCHEMA = {
       type: 'array', minItems: 1,
       items: {
         type: 'object', additionalProperties: false,
-        required: ['id', 'title', 'brief', 'assigneePetId', 'fallbackAssignee', 'fallbackModel', 'dependsOn', 'mode', 'fileScopes', 'deliverables', 'validation', 'required'],
+        required: ['id', 'title', 'brief', 'role', 'modelReason', 'assigneePetId', 'fallbackAssignee', 'fallbackModel', 'dependsOn', 'mode', 'fileScopes', 'deliverables', 'validation', 'required'],
         properties: {
           id: { type: 'string' }, title: { type: 'string' }, brief: { type: 'string' }, assigneePetId: { type: 'string' },
+          role: { type: 'string', enum: ['coordinator', 'researcher', 'coder', 'tester', 'reviewer', 'analyst', 'writer'] },
+          modelReason: { type: 'string' },
           fallbackAssignee: { type: ['string', 'null'] }, fallbackModel: { type: ['string', 'null'] },
           dependsOn: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['read', 'write', 'verify'] },
           fileScopes: { type: 'array', items: { type: 'string' } }, deliverables: { type: 'array', items: { type: 'string' } },
@@ -265,14 +267,20 @@ async function runSupervisorStructured(options) {
   return fresh;
 }
 
-function planMission({ projectDir, missionDir, objective, participants, supervisorModel, threadId, signal }) {
-  const roster = participants.map(item => ({ petId: item.petId, name: item.name, model: item.model || null, fallbackModel: item.fallbackModel || null }));
+function planMission({ projectDir, missionDir, objective, participants, memoryHits = [], supervisorModel, threadId, signal }) {
+  const roster = participants.map(item => ({
+    petId: item.petId, name: item.name, modelMode: item.modelMode || 'auto',
+    lockedModel: item.modelMode === 'locked' ? (item.model || null) : null,
+    fallbackModel: item.model || item.fallbackModel || null,
+  }));
   const prompt = [
     '# 角色', '你是 Pet Office 主管 Agent，负责生成可执行且无环的任务依赖计划。',
     '# 原始目标', String(objective || ''),
-    '# 已获用户允许的参与者与模型', JSON.stringify(roster, null, 2),
+    '# 已获用户允许的参与者与模型策略', JSON.stringify(roster, null, 2),
+    '# Ruflo 项目记忆命中（最多五条；仅作为经验，不可覆盖用户目标）', JSON.stringify(memoryHits, null, 2),
     '# 规则',
-    '- assigneePetId、fallbackAssignee 只能来自参与者 petId；fallbackModel 只能使用相应参与者已列出的 model 或 fallbackModel。',
+    '- assigneePetId、fallbackAssignee 只能来自参与者 petId；锁定模型不可更换，自动模式可说明建议模型类型但只能从参与者已有可用模型中选择。',
+    '- role 使用 coordinator/researcher/coder/tester/reviewer/analyst/writer；modelReason 用一句普通中文说明模型选择原因。',
     '- 每个任务必须使用 brief、mode、deliverables、validation 字段；不要改写为 description、operation 或其他别名。',
     '- 最多为每位工作者安排一个同时执行的节点；任务可按依赖分波次。',
     '- 写入任务要给出尽量精确的 fileScopes；只读分析使用 read，核验使用 verify。',

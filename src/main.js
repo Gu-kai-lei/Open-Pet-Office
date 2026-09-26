@@ -16,6 +16,8 @@ const { workspacePath } = require('./path-safety');
 const inbox = require('./inbox');
 const diagnostics = require('./diagnostics');
 const { MissionManager } = require('./mission-manager');
+const { RufloRuntimeManager } = require('./ruflo-runtime');
+const { RufloAdapter } = require('./ruflo-adapter');
 const { hydrateProject, clearProjectInbox } = require('./project-service');
 const { recommendAgents } = require('./recommender');
 const releaseManager = require('./release-manager');
@@ -74,6 +76,12 @@ let releaseCache = {
   crashes: releaseManager.crashReportSummary(cfg.DIRS.crashes),
 };
 const notificationTimes = new Map();
+const rufloRuntime = new RufloRuntimeManager({
+  root: cfg.DIRS.ruflo,
+  log: cfg.log,
+  onStatus: status => send('ruflo:status', status),
+});
+const ruflo = new RufloAdapter({ runtime: rufloRuntime, log: cfg.log });
 
 function redactCrashText(value) {
   return String(value || '')
@@ -119,8 +127,10 @@ const missionManager = new MissionManager({
   projects: () => state.projects || [],
   roster: () => petRoster(),
   supervisorModel: () => state.pets.supervisor.model || null,
+  models: () => catalog.loadModels(),
   planner,
   dispatcher,
+  ruflo,
   log: cfg.log,
   onSnapshot: missions => {
     send('mission:snapshot', { missions });
@@ -139,7 +149,7 @@ const missionManager = new MissionManager({
         source: 'mission',
         petId: task.assigneePetId,
         petName: task.assigneeName,
-        model: task.model,
+        model: task.actualModel || task.model,
         brief: task.title,
         status: task.status,
         threadId: task.threadId || null,
@@ -149,7 +159,7 @@ const missionManager = new MissionManager({
   onDone: mission => {
     send('mission:done', mission);
     systemNotify('Mission 已结束', mission.objective + ' · ' + mission.status, mission.status === 'completed' ? 'completion' : 'attention', 'mission-' + mission.id);
-    if (mission.status === 'completed' || mission.status === 'partially_succeeded') {
+    if (mission.status === 'completed' || mission.status === 'partial' || mission.status === 'partially_succeeded') {
       bridge.writeResult('mission-' + mission.id, mission.finalReview ? mission.finalReview.summary : 'Mission 已完成。', mission);
     }
   },
@@ -373,8 +383,8 @@ function spriteDataUrl(spritePath) {
 
 function petRoster() {
   return [
-    { id: 'supervisor', role: 'supervisor', name: state.pets.supervisor.name, model: state.pets.supervisor.model },
-    ...state.pets.workers.map(w => ({ id: w.id, role: 'worker', name: w.name, model: w.model })),
+    { id: 'supervisor', role: 'supervisor', name: state.pets.supervisor.name, model: state.pets.supervisor.model, modelMode: state.pets.supervisor.modelMode || 'auto' },
+    ...state.pets.workers.map(w => ({ id: w.id, role: 'worker', name: w.name, model: w.model, modelMode: w.modelMode || 'auto' })),
   ];
 }
 
@@ -417,7 +427,7 @@ function projectBusy(projectId) {
   if (live) return { busy: true, reason: '项目中仍有桌宠会话正在运行。' };
   const activeBatch = [...batches.values()].find(batch => batch.projectId === projectId && batch.status !== 'done' && (batch.status === 'planning' || [...batch.tasks.values()].some(task => ['queued', 'running', 'waiting_input'].includes(task.status))));
   if (activeBatch) return { busy: true, reason: '项目中仍有分工任务正在运行。' };
-  const activeMission = missionManager.snapshot().find(mission => mission.projectId === projectId && ['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status));
+  const activeMission = missionManager.snapshot().find(mission => mission.projectId === projectId && ['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted'].includes(mission.status));
   if (activeMission) return { busy: true, reason: '项目中仍有未结束的 Mission。' };
   return { busy: false };
 }
@@ -1321,7 +1331,7 @@ function createWindow() {
       setTimeout(async () => {
         try {
           const action = captureView === 'diagnostics'
-            ? "(async () => { diagnosticsReport = await window.petOffice.diagnostics(); openPanel('supervisor', 'settings'); const page = document.querySelector('#panel .panel-page'); page.scrollTop = page.scrollHeight; return { items: diagnosticsReport.items, scrollTop: page.scrollTop }; })()"
+            ? "(async () => { diagnosticsReport = await window.petOffice.diagnostics(); openPanel('supervisor', 'settings'); const support = document.querySelector('[data-disclosure=settings-support]'); if (support) support.open = true; const page = document.querySelector('#panel .panel-page'); page.scrollTop = support ? Math.max(0, support.offsetTop - 80) : page.scrollHeight; return { items: diagnosticsReport.items, supportOpen: !!(support && support.open), scrollTop: page.scrollTop }; })()"
             : captureView === 'experience'
             ? "(() => { S.settings.compactMode = true; S.settings.petScale = 1.2; S.settings.reducedMotion = true; S.shortcutStatus = { ok: true, active: 'Control+Alt+P', fallback: false }; applyAppearanceSettings(); setStatus(pets.get('supervisor'), 'needs_input'); openPanel('supervisor', 'settings'); return { compactMode: S.settings.compactMode, petScale: S.settings.petScale, reducedMotion: S.settings.reducedMotion }; })()"
             : captureView === 'appearance'
@@ -1332,10 +1342,14 @@ function createWindow() {
               ? "(() => { tasks = [{ id: 'live-1', petId: 'supervisor', petName: 'CC', model: null, brief: '优化桌宠任务动态显示', progress: '正在修改任务状态卡并运行回归测试…', progressStage: 'file', status: 'running', threadId: 'test-thread', startedAt: Date.now(), updatedAt: Date.now() }]; updateLiveTaskCard(); return { visible: !document.getElementById('live-task').classList.contains('hidden'), text: document.getElementById('live-task').innerText }; })()"
             : captureView === 'activity'
             ? "(() => { interactions = [{ id: 'test-approval', kind: 'approval', title: '命令需要批准', reason: 'Agent 请求运行测试命令', detail: 'npm test -- StatusBadge', threadId: 'test-thread', petId: 'supervisor', createdAt: Date.now() }, { id: 'test-question', kind: 'question', title: 'Agent 正在等你回答', reason: '回答后继续', threadId: 'test-thread', petId: 'w1', createdAt: Date.now(), questions: [{ id: 'scope', header: '测试范围', question: '要运行完整测试还是快速测试？', options: [{ label: '快速测试', description: '更快' }, { label: '完整测试', description: '更全面' }] }] }]; tasks = [{ id: 't1', petId: 'supervisor', petName: 'Michael', model: null, brief: '等待批准后继续修改项目', progress: '准备运行项目测试命令，等待你的确认', progressStage: 'command', status: 'waiting_input', threadId: 'test-thread', startedAt: Date.now() }, { id: 't2', petId: 'w1', petName: '小蓝', model: 'deepseek/deepseek-v4-flash', brief: '核验项目代码和测试结果', progress: '运行命令 · npm test -- --runInBand', progressStage: 'command', status: 'running', threadId: 'test-thread-2', startedAt: Date.now() - 1000 }, { id: 't3', petId: 'w2', petName: '小绿', model: null, brief: '界面优化已完成', progress: '界面与回归测试均已完成', progressStage: 'report', status: 'done', threadId: 'test-thread-3', startedAt: Date.now() - 2000 }]; updateActivityBadge(); openActivity(); return { interactions: interactions.length, tasks: tasks.length }; })()"
+            : captureView === 'ruflo-setup'
+              ? "(() => { showRufloSetup({ checks: { node: { ok: true, value: 'v24.14.1' }, npm: { ok: true, value: '11.11.0' }, network: { ok: true, value: 'npm registry 可访问' }, disk: { ok: true, value: 128849018880 }, runtime: { ok: false, value: { ruflo: null, cli: null } }, mcp: { ok: false, value: '等待安装后检查' } } }, () => {}); return { checks: document.querySelectorAll('.ruflo-check').length, install: !!document.getElementById('ruflo-install') }; })()"
             : captureView === 'mission-plan'
-              ? "(() => { const plan = { id: 'mission-plan-demo', status: 'awaiting_confirmation', tasks: [{ id: 'research', title: '梳理现有架构', brief: '检查当前调度、状态与数据边界，列出需要保持兼容的接口。', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'read', wave: 0 }, { id: 'engine', title: '实现 Mission 状态机', brief: '加入持久化、依赖波次、阶段检查与恢复。', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['research'], mode: 'write', wave: 1 }, { id: 'qa', title: '端到端核验', brief: '验证冲突、取消、恢复与最终回写。', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['engine'], mode: 'verify', wave: 2 }] }; showMissionPlan(plan, '实现真正的主管 Agent', [{ petId: 'w1' }, { petId: 'w2' }, { petId: 'w3' }]); return { nodes: plan.tasks.length }; })()"
+              ? "(() => { const plan = { id: 'mission-plan-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-4100', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', memoryHits: [{ key: 'mission-accessible-deliverables', value: '复杂文档任务先核对附件可访问性，再拆分写作与独立复核。', similarity: .91 }], status: 'awaiting_confirmation', tasks: [{ id: 'research', title: '梳理现有架构', brief: '检查当前调度、状态与数据边界，列出需要保持兼容的接口。', assigneePetId: 'w1', assigneeName: '小蓝', model: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol', role: 'researcher', modelReason: '用户已锁定模型，适合长上下文项目分析', dependsOn: [], mode: 'read', wave: 0 }, { id: 'engine', title: '实现 Mission 状态机', brief: '加入持久化、依赖波次、阶段检查与恢复。', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', actualModel: 'deepseek/deepseek-v4-flash', role: 'coder', modelReason: 'Ruflo 按中等复杂度匹配本机可用编码模型', dependsOn: ['research'], mode: 'write', wave: 1 }, { id: 'qa', title: '端到端核验', brief: '验证冲突、取消、恢复与最终回写。', assigneePetId: 'w3', assigneeName: '小橙', model: 'zhipu-bigmodel-coding/glm-5.3', actualModel: 'zhipu-bigmodel-coding/glm-5.3', role: 'reviewer', modelReason: '独立复核使用不同模型降低同源误判', dependsOn: ['engine'], mode: 'verify', wave: 2 }] }; showMissionPlan(plan, '实现真正的主管 Agent', [{ petId: 'w1' }, { petId: 'w2' }, { petId: 'w3' }]); return { nodes: plan.tasks.length }; })()"
+            : captureView === 'mission-needs-input'
+              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-attention-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-attention', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'degraded', error: 'Ruflo MCP 已退出，等待重新连接' }, projectName: 'Pet Office', objective: '整理发布说明并完成 Windows 验证', status: 'needs_input', currentWave: 1, error: 'Ruflo MCP 连接中断；本地状态已保留，修复后可对账恢复。', pendingAction: { kind: 'ruflo_runtime', action: 'repair' }, createdAt: now - 60000, updatedAt: now, memoryHits: [], messages: [{ from: 'system', to: 'supervisor', summary: 'MCP 进程退出，已暂停新任务调度。' }], tasks: [{ id: 'build', title: '生成 Windows portable', brief: '等待 Ruflo 恢复后继续', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 1, attempts: 1, status: 'interrupted', error: '运行时连接中断' }] }]; tasks = [{ id: 'mission-attention-demo:supervisor', missionId: 'mission-attention-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); return { missions: missions.length, status: missions[0].status }; })()"
             : captureView === 'mission'
-  ? "(() => { const now = Date.now(); missions = [{ id: 'mission-demo', projectName: 'Pet Office', objective: '实现真正的主管 Agent 与安全合并流程', status: 'partially_succeeded', currentWave: 2, supervisorThreadId: 'supervisor-thread', finalReview: { verdict: 'partial', summary: '交付链路已闭合：三个节点全部接受，产出隔离工作区实现与回归报告。存在非致命缺失：外部基准材料不可访问，两项推导只能做自洽性核验，无法与课程原件对齐。', validationSummary: '独立核验完成 SHA256 前后比对与关键路径重算，链接完整性检查全部通过；缺少外部真值是主要局限。', risks: ['来源材料在执行环境中不可访问，建议对照原始课件核对符号约定与侧重。', '自测题中一道答案与独立重算不一致，使用前请先修正。'] }, createdAt: now - 120000, updatedAt: now, tasks: [{ id: 'architecture', title: '建立 Mission 持久化与依赖图', brief: '实现任务数据模型和恢复流程', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'accepted', review: { reason: '结构和恢复测试通过' } }, { id: 'runtime', title: '隔离工作区与安全回写', brief: '实现 worktree、快照和冲突检测', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['architecture'], mode: 'write', wave: 1, attempts: 1, status: 'accepted', review: { reason: '工作区变更与交付物一致' } }, { id: 'verify', title: '回归与最终核验', brief: '运行测试并检查状态准确性', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['runtime'], mode: 'verify', wave: 2, attempts: 1, status: 'accepted', review: { reason: '回归与最终核验通过' } }] }]; tasks = [{ id: 'mission-demo:supervisor', missionId: 'mission-demo', source: 'mission', petId: 'supervisor', petName: 'Michael', brief: missions[0].objective, progress: '主管已完成最终复核并生成可读总结', progressStage: 'finishing', status: 'done', threadId: 'supervisor-thread', startedAt: now - 120000, updatedAt: now }]; openActivity(); const demoCard = document.querySelector('.mission-card'); if (demoCard) demoCard.open = true; return { missions: missions.length, nodes: missions[0].tasks.length, verdict: missions[0].finalReview.verdict }; })()"
+  ? "(() => { const now = Date.now(); missions = [{ id: 'mission-demo', projectName: 'Pet Office', objective: '实现真正的主管 Agent 与安全合并流程', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-finished', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'ready' }, memoryHits: [{ key: 'safe-apply', value: '复核通过后再回写主项目。' }], messages: [{ from: 'w1', to: 'supervisor', summary: '架构实现完成并通过恢复测试。' }, { from: 'supervisor', to: 'w3', summary: '请独立核验安全回写范围。' }], status: 'partial', currentWave: 2, supervisorThreadId: 'supervisor-thread', finalReview: { verdict: 'partial', summary: '交付链路已闭合：三个节点全部接受，产出隔离工作区实现与回归报告。存在非致命缺失：外部基准材料不可访问，两项推导只能做自洽性核验，无法与课程原件对齐。', validationSummary: '独立核验完成 SHA256 前后比对与关键路径重算，链接完整性检查全部通过；缺少外部真值是主要局限。', risks: ['来源材料在执行环境中不可访问，建议对照原始课件核对符号约定与侧重。', '自测题中一道答案与独立重算不一致，使用前请先修正。'] }, createdAt: now - 120000, updatedAt: now, tasks: [{ id: 'architecture', title: '建立 Mission 持久化与依赖图', brief: '实现任务数据模型和恢复流程', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'accepted', review: { reason: '结构和恢复测试通过' } }, { id: 'runtime', title: '隔离工作区与安全回写', brief: '实现 worktree、快照和冲突检测', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['architecture'], mode: 'write', wave: 1, attempts: 1, status: 'accepted', review: { reason: '工作区变更与交付物一致' } }, { id: 'verify', title: '回归与最终核验', brief: '运行测试并检查状态准确性', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['runtime'], mode: 'verify', wave: 2, attempts: 1, status: 'accepted', review: { reason: '回归与最终核验通过' } }] }]; tasks = [{ id: 'mission-demo:supervisor', missionId: 'mission-demo', source: 'mission', petId: 'supervisor', petName: 'Michael', brief: missions[0].objective, progress: '主管已完成最终复核并生成可读总结', progressStage: 'finishing', status: 'done', threadId: 'supervisor-thread', startedAt: now - 120000, updatedAt: now }]; openActivity(); const demoCard = document.querySelector('.mission-card'); if (demoCard) demoCard.open = true; const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, nodes: missions[0].tasks.length, verdict: missions[0].finalReview.verdict }; })()"
             : captureView === 'activity-live'
               ? "openActivity()"
             : captureView === 'live-task-real'
@@ -1366,6 +1380,8 @@ function createWindow() {
               ? "(async () => { openComposer('supervisor', true, '请快速实现桌宠界面代码，并审查测试结果和截图'); await new Promise(r => setTimeout(r, 500)); await applyAgentRecommendation(); return { selected: [...document.querySelectorAll('[data-pet]:checked')].map(x => x.dataset.pet), note: document.getElementById('c-recommendation-note').innerText }; })()"
             : captureView === 'team'
               ? "openPanel('supervisor', 'team')"
+              : captureView === 'theme-system'
+                ? "(() => { S.settings.themeMode = 'system'; applyAppearanceSettings(); openPanel('supervisor', 'overview'); return { theme: document.body.dataset.theme, dark: document.body.classList.contains('theme-dark'), primaryActions: document.querySelectorAll('.overview-primary').length }; })()"
               : captureView === 'theme-dark'
                 ? "(() => { S.settings.themeMode = 'dark'; applyAppearanceSettings(); openPanel('supervisor', 'overview'); return { theme: document.body.dataset.theme, dark: document.body.classList.contains('theme-dark'), primaryActions: document.querySelectorAll('.overview-primary').length }; })()"
               : captureView === 'deepseek'
@@ -1433,6 +1449,7 @@ app.on('before-quit', () => {
   try { desktopMonitor.stop(); } catch {}
   try { appServer.stop(); } catch {}
   try { missionManager.shutdown(); } catch {}
+  try { ruflo.shutdown(); } catch {}
   try { dispatcher.shutdown(); } catch {}
   try { planner.shutdown(); } catch {}
   try { bridge.stopWatching(); } catch {}
@@ -1495,6 +1512,7 @@ ipcMain.handle('task:start', async (e, payload) => {
       petId: p.petId,
       name: p.name || (r && r.name) || p.petId,
       model: hasExplicitModel ? (p.model || null) : (r ? r.model : null),
+      modelMode: p.modelMode || (r && r.modelMode) || ((hasExplicitModel ? p.model : (r && r.model)) ? 'locked' : 'auto'),
       use: !!p.use,
     };
   });
@@ -1509,6 +1527,27 @@ ipcMain.handle('mission:resume', async (e, id) => missionManager.resume(id));
 ipcMain.handle('mission:list', () => missionManager.snapshot());
 ipcMain.handle('mission:get', (e, id) => missionManager.get(id));
 ipcMain.handle('mission:resolveConflict', (e, payload = {}) => missionManager.resolveConflict(payload.missionId, payload.action));
+ipcMain.handle('mission:cloneLegacy', (e, id) => missionManager.cloneLegacy(id));
+ipcMain.handle('mission:publishMemory', (e, id) => missionManager.publishMemory(id));
+ipcMain.handle('ruflo:health', (e, projectId) => ruflo.health(projectId || state.activeProjectId, { probe: true }));
+ipcMain.handle('ruflo:install', async () => {
+  try {
+    const health = await ruflo.install({ onProgress: message => message && send('ruflo:status', { state: 'installing', message }) });
+    return { ok: true, health };
+  } catch (error) {
+    cfg.log('ruflo install failed: ' + error.message);
+    return { ok: false, error: error.message, health: await ruflo.health(state.activeProjectId) };
+  }
+});
+ipcMain.handle('ruflo:repair', async () => {
+  try {
+    const health = await ruflo.repair({ onProgress: message => message && send('ruflo:status', { state: 'repairing', message }) });
+    return { ok: true, health };
+  } catch (error) {
+    cfg.log('ruflo repair failed: ' + error.message);
+    return { ok: false, error: error.message, health: await ruflo.health(state.activeProjectId) };
+  }
+});
 ipcMain.handle('chat:start', async (e, payload) => startPetChat(payload || {}));
 ipcMain.handle('chat:new', (e, payload) => resetPetConversation(payload || {}));
 ipcMain.handle('chat:reset', (e, payload) => resetPetConversation(payload || {}));
@@ -1631,10 +1670,11 @@ ipcMain.handle('pet:rename', (e, { petId, name }) => {
   cfg.saveState(state);
   return true;
 });
-ipcMain.handle('pet:model', (e, { petId, model }) => {
+ipcMain.handle('pet:model', (e, { petId, model, mode }) => {
   const m = model || null;
-  if (petId === 'supervisor') state.pets.supervisor.model = m;
-  else { const w = state.pets.workers.find(x => x.id === petId); if (w) w.model = m; }
+  const modelMode = mode === 'auto' || mode === 'locked' ? mode : (m ? 'locked' : 'auto');
+  if (petId === 'supervisor') { state.pets.supervisor.model = m; state.pets.supervisor.modelMode = modelMode; }
+  else { const w = state.pets.workers.find(x => x.id === petId); if (w) { w.model = m; w.modelMode = modelMode; } }
   cfg.saveState(state);
   return true;
 });
@@ -1720,11 +1760,17 @@ ipcMain.handle('petdex:open', async () => {
   return true;
 });
 ipcMain.handle('quota:refresh', async () => { await refreshQuotas(true); return quotaCache; });
-ipcMain.handle('diagnostics:get', async () => diagnostics.collectDiagnostics({
-  appServerHealth: appServer.health(),
-  desktopMonitorHealth,
-  quotaCache,
-}));
+ipcMain.handle('diagnostics:get', async () => {
+  let rufloHealth = null;
+  try { rufloHealth = await ruflo.health(state.activeProjectId, { probe: false }); }
+  catch (error) { rufloHealth = { ready: false, state: 'error', checks: { mcp: { ok: false, value: error.message } } }; }
+  return diagnostics.collectDiagnostics({
+    appServerHealth: appServer.health(),
+    desktopMonitorHealth,
+    quotaCache,
+    rufloHealth,
+  });
+});
 ipcMain.handle('desktop:displays', () => ({ displays: displaySnapshot(), activeDisplayId, fullscreenActive }));
 ipcMain.handle('release:check', () => checkForUpdates(true));
 ipcMain.handle('release:open', async () => {

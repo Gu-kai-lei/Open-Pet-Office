@@ -14,6 +14,10 @@ const DIRS = {
   fromPets: path.join(APP_DIR, 'bridge', 'from-pets'),
   processed: path.join(APP_DIR, 'bridge', 'to-pets', 'processed'),
   runtime: path.join(APP_DIR, 'runtime'),
+  ruflo: path.join(APP_DIR, 'ruflo'),
+  rufloRuntime: path.join(APP_DIR, 'ruflo', 'runtime'),
+  rufloProjects: path.join(APP_DIR, 'ruflo', 'projects'),
+  rufloLogs: path.join(APP_DIR, 'ruflo', 'logs'),
   crashes: path.join(APP_DIR, 'crashes'),
   captures: path.join(APP_DIR, 'captures'),
   projectsRoot: path.join(HOME, 'Documents', 'PetOffice', 'projects'),
@@ -30,7 +34,7 @@ const STATE_TEMP_FILE = path.join(APP_DIR, 'state.next.json');
 const LOG_FILE = path.join(DIRS.logs, 'app.log');
 const LOG_BACKUP_FILE = path.join(DIRS.logs, 'app.previous.log');
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
-const STATE_SCHEMA_VERSION = 5;
+const STATE_SCHEMA_VERSION = 6;
 
 let pendingState = null;
 let saveTimer = null;
@@ -57,6 +61,7 @@ const DEFAULT_STATE = {
     fontScale: 1,
     fontFamily: 'system',
     autoCheckUpdates: true,
+    rufloDelegation: true,
   },
   ui: {
     delegationOn: false,
@@ -66,12 +71,12 @@ const DEFAULT_STATE = {
     pinnedLiveTaskKey: null,
   },
   pets: {
-    supervisor: { name: 'Michael', model: null, skin: null },
+    supervisor: { name: 'Michael', model: null, modelMode: 'auto', skin: null },
     workers: [
-      { id: 'w1', name: '小蓝', model: null, skin: null },
-      { id: 'w2', name: '小绿', model: null, skin: null },
-      { id: 'w3', name: '小橙', model: null, skin: null },
-      { id: 'w4', name: '小紫', model: null, skin: null },
+      { id: 'w1', name: '小蓝', model: null, modelMode: 'auto', skin: null },
+      { id: 'w2', name: '小绿', model: null, modelMode: 'auto', skin: null },
+      { id: 'w3', name: '小橙', model: null, modelMode: 'auto', skin: null },
+      { id: 'w4', name: '小紫', model: null, modelMode: 'auto', skin: null },
     ],
   },
   caps: {},

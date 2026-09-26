@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ACTIVE = new Set(['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input']);
+const ACTIVE = new Set(['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input']);
 
 function safeId(value) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 100);
@@ -121,6 +121,13 @@ class MissionStore {
     return value;
   }
 
+  messages(mission, limit = 120) {
+    try {
+      const file = path.join(this.missionDir(mission.projectPath, mission.id), 'messages.jsonl');
+      return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)).slice(-limit);
+    } catch { return []; }
+  }
+
   review(mission, name, value) {
     atomicJson(path.join(this.missionDir(mission.projectPath, mission.id), 'reviews', safeId(name) + '.json'), sanitizeValue(value));
   }
@@ -157,9 +164,14 @@ class MissionStore {
         mission.projectId = mission.projectId || project.id;
         mission.projectName = mission.projectName || project.name;
         mission.projectPath = mission.projectPath || project.path;
+        mission.engine = mission.engine || 'legacy';
+        mission.schemaVersion = Number(mission.schemaVersion) || 1;
+        mission.legacy = mission.schemaVersion < 2 || mission.engine !== 'ruflo';
         if (ACTIVE.has(mission.status)) {
           mission.status = 'interrupted';
-          mission.interruptionReason = 'Pet Office 已重启；运行进程未自动重连。';
+          mission.interruptionReason = mission.legacy
+            ? '这是旧版 Mission，仅供查看；可复制为 Ruflo 任务重新执行。'
+            : 'Pet Office 已重启；请对账 Ruflo swarm 与任务状态后恢复。';
           for (const task of mission.tasks || []) {
             if (['queued', 'running', 'reviewing'].includes(task.status)) task.status = 'interrupted';
           }

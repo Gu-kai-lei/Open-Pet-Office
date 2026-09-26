@@ -6,10 +6,10 @@ const STATUS_TEXT = {
   needs_input: '需要输入', failed: '出错', capped: '达用量上限', cancelled: '已取消', unknown: '状态未知',
 };
 const MISSION_STATUS_TEXT = {
-  planning: '主管规划中', awaiting_confirmation: '等待确认', running: '执行中', reviewing: '主管检查中',
-  needs_input: '需要处理', interrupted: '已中断', completed: '已完成', partially_succeeded: '部分成功', failed: '失败', cancelled: '已取消',
+  setup: '准备 Ruflo', planning: '主管规划中', awaiting_confirmation: '等待确认', running: '执行中', reviewing: '主管检查中', integrating: '安全回写中',
+  needs_input: '需要处理', interrupted: '已中断', completed: '已完成', partial: '部分成功', partially_succeeded: '部分成功', failed: '失败', cancelled: '已取消',
 };
-const ACTIVE_MISSION_STATUSES = new Set(['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted']);
+const ACTIVE_MISSION_STATUSES = new Set(['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted']);
 
 let S = null;
 let delegationOn = false;
@@ -470,7 +470,7 @@ function bindEvents() {
     if (activitySurface.state !== 'closed') refreshActivityContents();
   });
   window.petOffice.on('mission:done', mission => {
-    const label = mission.status === 'completed' ? 'Mission 已完成' : (mission.status === 'partially_succeeded' ? 'Mission 部分完成' : 'Mission 已结束');
+    const label = mission.status === 'completed' ? 'Mission 已完成' : (['partial', 'partially_succeeded'].includes(mission.status) ? 'Mission 部分完成' : 'Mission 已结束');
     bubble('supervisor', label, 9000, mission.status === 'completed' ? 'completion' : 'attention');
     refreshState();
     setTimeout(restoreWorkerVisibility, 6000);
@@ -917,7 +917,7 @@ function updateLiveTaskCard(showCompletion = false) {
     const status = mission.status === 'completed' ? 'done'
       : (mission.status === 'failed' ? 'failed'
         : (mission.status === 'cancelled' ? 'cancelled'
-          : (['needs_input', 'interrupted', 'awaiting_confirmation', 'partially_succeeded'].includes(mission.status) ? 'needs_input' : 'working')));
+          : (['needs_input', 'interrupted', 'awaiting_confirmation', 'partial', 'partially_succeeded'].includes(mission.status) ? 'needs_input' : 'working')));
     const detail = current ? ((current.assigneeName || current.assigneePetId) + ' · ' + missionTaskStatusLabel(current.status) + (current.progress ? ' · ' + short(current.progress, 70) : '')) : (MISSION_STATUS_TEXT[mission.status] || mission.status);
     const key = 'mission:' + mission.id;
     const pinnedMark = S.ui.pinnedLiveTaskKey === key;
@@ -1322,7 +1322,7 @@ function petMapValues() {
 }
 
 function modelOptions(selected) {
-  return '<option value=""' + (!selected ? ' selected' : '') + '>Codex 默认</option>' +
+  return '<option value=""' + (!selected ? ' selected' : '') + '>自动选择（Ruflo → 桌宠备用 → Codex 默认）</option>' +
     (S.models || []).map(model => {
       const tags = capabilityLabels(model.slug).slice(0, 3);
       return '<option value="' + esc(model.slug) + '"' + (model.slug === selected ? ' selected' : '') + '>' + esc(model.name + (tags.length ? ' · ' + tags.join('/') : '')) + '</option>';
@@ -1491,7 +1491,7 @@ function activityTaskHtml(task) {
 
 function missionStatusClass(status) {
   if (status === 'completed') return 'done';
-  if (status === 'partially_succeeded') return 'partial';
+  if (status === 'partial' || status === 'partially_succeeded') return 'partial';
   if (status === 'failed') return 'failed';
   if (status === 'cancelled') return 'cancelled';
   if (['needs_input', 'interrupted', 'awaiting_confirmation'].includes(status)) return 'attention';
@@ -1525,21 +1525,29 @@ function missionCardHtml(mission) {
   }
   const taskRows = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, items]) =>
     '<div class="mission-wave"><div class="mission-wave-title">阶段 ' + (wave + 1) + '<span>' + items.length + '</span></div>' + items.map(task =>
-      '<div class="mission-node"><span class="mission-node-state ' + esc(task.status) + '"></span><div><b>' + esc(task.title) + '</b><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.review && task.review.reason ? '<p>' + esc(short(task.review.reason, 130)) + '</p>' : '') + '</div><aside><span>' + esc(missionTaskStatusLabel(task.status)) + '</span>' + (task.attempts ? '<i>第 ' + task.attempts + ' 次</i>' : '') + (task.threadId && ['accepted', 'failed', 'skipped', 'cancelled'].includes(task.status) ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</aside></div>'
+      '<div class="mission-node"><span class="mission-node-state ' + esc(task.status) + '"></span><div><b>' + esc(task.title) + '</b><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(task.role || 'coder') + ' · ' + esc(modelName(task.actualModel || task.model)) + ((task.dependsOn || []).length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.modelReason ? '<em class="model-reason">' + esc(short(task.modelReason, 130)) + '</em>' : '') + (task.review && task.review.reason ? '<p>' + esc(short(task.review.reason, 130)) + '</p>' : '') + '</div><aside><span>' + esc(missionTaskStatusLabel(task.status)) + '</span>' + (task.attempts ? '<i>第 ' + task.attempts + ' 次</i>' : '') + (task.threadId && ['accepted', 'failed', 'skipped', 'cancelled'].includes(task.status) ? '<button class="text-btn" data-activity-thread="' + esc(task.threadId) + '">打开</button>' : '') + '</aside></div>'
     ).join('') + '</div>'
   ).join('');
   let actions = '';
-  if (mission.status === 'awaiting_confirmation') actions = '<button class="btn" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button><button class="btn primary" data-mission-confirm="' + esc(mission.id) + '">确认执行</button>';
-  else if (mission.status === 'interrupted') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">检查并恢复</button>';
+  if (mission.legacy) actions = '<button class="btn primary" data-mission-clone="' + esc(mission.id) + '">复制为 Ruflo 任务</button>';
+  else if (mission.status === 'awaiting_confirmation') actions = '<button class="btn" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button><button class="btn primary" data-mission-confirm="' + esc(mission.id) + '">确认执行</button>';
+  else if (mission.status === 'interrupted') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">对账并恢复</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'ruflo_runtime') actions = '<button class="btn primary" data-ruflo-repair="' + esc(mission.id) + '">诊断并修复 Ruflo</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'high_risk') actions = '<button class="btn danger" data-mission-apply="' + esc(mission.id) + '">确认高风险回写</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">我已手动处理</button>';
   else if (mission.status === 'needs_input' && !(mission.tasks || []).length) actions = '<button class="btn primary" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>';
-  if (['planning', 'awaiting_confirmation', 'running', 'reviewing', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
+  if (!mission.legacy && ['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
+  if (!mission.legacy && ['completed', 'partial'].includes(mission.status) && !mission.memoryPublished) actions += '<button class="btn" data-memory-publish="' + esc(mission.id) + '">发布为通用经验</button>';
   const key = 'mission:' + mission.id;
   const active = ACTIVE_MISSION_STATUSES.has(mission.status);
   const supervisorSummary = mission.error || (mission.finalReview && mission.finalReview.summary) || (MISSION_STATUS_TEXT[mission.status] || mission.status);
-  const supervisorRecord = '<div class="mission-supervisor-record"><div><b>主管记录</b><span>' + esc(short(supervisorSummary, 180)) + '</span></div><small>' + (active ? 'Mission 结束前由 Pet Office 持有主管任务，请在这里查看进度和处理事项。' : 'Mission 已结束，可以在 Codex 中查看完整主管对话。') + '</small></div>';
-  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + taskRows + (mission.finalReview ? missionFinalHtml(mission.finalReview) : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
+  const supervisorRecord = '<div class="mission-supervisor-record"><div><b>主管记录</b><span>' + esc(short(supervisorSummary, 180)) + '</span></div><small>' + (active ? '任务由 Pet Office 与 Ruflo 协同持有，请在这里查看进度和处理事项。' : '任务已结束，可以在 Codex 中查看完整主管对话。') + '</small></div>';
+  const badge = mission.legacy ? '<span class="engine-badge legacy">旧版任务</span>' : '<span class="engine-badge">Ruflo</span>';
+  const messages = (mission.messages || []).slice(-8);
+  const messageHtml = messages.length ? '<details class="mission-stream"><summary>团队消息 <span>' + messages.length + '</span></summary>' + messages.map(item => '<p><b>' + esc(item.from || 'system') + ' → ' + esc(item.to || 'all') + '</b>' + esc(short(item.summary, 180)) + '</p>').join('') + '</details>' : '';
+  const memoryHtml = (mission.memoryHits || []).length ? '<div class="memory-hit">规划前检索到 ' + mission.memoryHits.length + ' 条项目经验</div>' : '';
+  const advanced = mission.legacy ? '' : '<details class="ruflo-advanced"><summary>高级详情与诊断</summary><dl><dt>Swarm</dt><dd>' + esc(mission.swarmId || '—') + '</dd><dt>拓扑</dt><dd>' + esc(mission.topology || 'hierarchical') + ' · ' + esc(mission.consensus || 'raft') + '</dd><dt>Namespace</dt><dd>' + esc(mission.memoryNamespace || '—') + '</dd><dt>MCP</dt><dd>' + esc((mission.runtimeHealth && mission.runtimeHealth.state) || 'unknown') + '</dd><dt>Ruflo</dt><dd>' + esc(mission.rufloVersion || '—') + '</dd></dl></details>';
+  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'integrating', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + badge + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + memoryHtml + taskRows + messageHtml + advanced + (mission.finalReview ? missionFinalHtml(mission.finalReview) : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
 }
 
 function missionSectionHtml(items = missions) {
@@ -1562,8 +1570,8 @@ function matchesActivityView(item, mission = false) {
   if (activityView === 'all') return true;
   const status = item.status;
   if (activityView === 'attention') return (mission ? ['awaiting_confirmation', 'needs_input', 'interrupted', 'failed'] : ['waiting_input', 'failed']).includes(status);
-  if (activityView === 'active') return (mission ? ['planning', 'running', 'reviewing'] : ['queued', 'running']).includes(status);
-  return (mission ? ['completed', 'partially_succeeded', 'cancelled'] : ['done', 'completed', 'cancelled', 'capped', 'unknown']).includes(status);
+  if (activityView === 'active') return (mission ? ['setup', 'planning', 'running', 'reviewing', 'integrating'] : ['queued', 'running']).includes(status);
+  return (mission ? ['completed', 'partial', 'partially_succeeded', 'cancelled'] : ['done', 'completed', 'cancelled', 'capped', 'unknown']).includes(status);
 }
 
 function refreshActivityContents() {
@@ -1584,7 +1592,7 @@ function refreshActivityContents() {
   const failed = ordered.filter(task => task.status === 'failed').slice(0, 8);
   const recent = ordered.filter(task => !['waiting_input', 'running', 'queued', 'failed'].includes(task.status)).slice(0, 8);
   const activeCount = filteredTasks.filter(task => ['running', 'queued'].includes(task.status)).length
-    + filteredMissions.filter(mission => ['planning', 'running', 'reviewing'].includes(mission.status)).length;
+    + filteredMissions.filter(mission => ['setup', 'planning', 'running', 'reviewing', 'integrating'].includes(mission.status)).length;
   const monitor = S.desktopMonitor || { ok: true };
   const monitorBanner = monitor.ok ? '' : '<div class="monitor-warning"><b>Codex Desktop 状态暂时不可用</b><span>' + esc(monitor.error || '已继续尝试重连') + '</span></div>';
   const empty = !filteredMissions.length && !interactions.length && !waiting.length && !active.length && !failed.length && !recent.length
@@ -1793,6 +1801,33 @@ function bindActivity() {
   panel.querySelectorAll('[data-mission-cancel]').forEach(button => { button.onclick = async () => { await window.petOffice.cancelMission(button.dataset.missionCancel); }; });
   panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionApply, 'apply'); }; });
   panel.querySelectorAll('[data-mission-resolved]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionResolved, 'mark-resolved'); }; });
+  panel.querySelectorAll('[data-mission-clone]').forEach(button => {
+    button.onclick = async () => {
+      const result = await window.petOffice.cloneLegacyMission(button.dataset.missionClone);
+      if (!result || !result.ok) {
+        if (result && result.code === 'RUFLO_SETUP_REQUIRED') return showRufloSetup(result.setup, () => openActivity());
+        return bubble('supervisor', (result && result.error) || '复制失败', 7500, 'attention');
+      }
+      missions = [result.mission, ...missions.filter(item => item.id !== result.mission.id)];
+      showMissionPlan(result.mission, result.mission.objective, result.mission.participants || []);
+    };
+  });
+  panel.querySelectorAll('[data-ruflo-repair]').forEach(button => {
+    button.onclick = async () => {
+      if (!await confirmAction('修复 Ruflo 运行时', '将重新安装固定版 Ruflo 3.43.0 和 CLI 3.43.0，并重新执行 MCP 健康检查。', '修复')) return;
+      bubble('supervisor', '正在修复 Ruflo 运行时…', 10000, 'attention');
+      const result = await window.petOffice.repairRuflo();
+      bubble('supervisor', result && result.ok ? 'Ruflo 已修复，可返回任务中心恢复。' : ((result && result.error) || '修复失败'), 8500, result && result.ok ? 'standard' : 'attention');
+      openActivity();
+    };
+  });
+  panel.querySelectorAll('[data-memory-publish]').forEach(button => {
+    button.onclick = async () => {
+      if (!await confirmAction('发布为通用经验', '将把脱敏后的总结、验证结论和模式写入 pet-office-patterns，供其他项目检索。不会写入附件、完整对话或私人绝对路径。', '发布')) return;
+      const result = await window.petOffice.publishMissionMemory(button.dataset.memoryPublish);
+      bubble('supervisor', result && result.ok ? '已发布为通用经验。' : ((result && result.error) || '发布失败'), 6500, result && result.ok ? 'standard' : 'attention');
+    };
+  });
   const respond = async (button, payload) => {
     const card = button.closest('[data-interaction-card]');
     card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
@@ -1926,7 +1961,7 @@ function panelPage(pet, tab) {
   if (tab === 'overview') {
     const project = currentProject();
     const scope = pet.role === 'supervisor' ? tasks.filter(t => t.source !== 'mission') : myTasks;
-    const running = scope.filter(t => ['queued', 'running'].includes(t.status)).length + (pet.role === 'supervisor' ? missions.filter(m => ['planning', 'running', 'reviewing'].includes(m.status)).length : 0);
+    const running = scope.filter(t => ['queued', 'running'].includes(t.status)).length + (pet.role === 'supervisor' ? missions.filter(m => ['setup', 'planning', 'running', 'reviewing', 'integrating'].includes(m.status)).length : 0);
     const relevantInteractions = interactions.filter(item => pet.role === 'supervisor' || scope.some(t => t.threadId && t.threadId === item.threadId));
     const interactionThreads = new Set(relevantInteractions.map(item => item.threadId).filter(Boolean));
     const attention = scope.filter(t => t.status === 'waiting_input' && !interactionThreads.has(t.threadId)).length + relevantInteractions.length + (pet.role === 'supervisor' ? missions.filter(m => ['awaiting_confirmation', 'needs_input', 'interrupted'].includes(m.status)).length : 0);
@@ -2148,7 +2183,8 @@ function bindPanel(petId) {
   if (modelSelect) modelSelect.onchange = async event => {
     const previousProvider = providerOf(pet.model);
     pet.model = event.target.value || null;
-    await window.petOffice.setModel(petId, pet.model);
+    pet.modelMode = pet.model ? 'locked' : 'auto';
+    await window.petOffice.setModel(petId, pet.model, pet.modelMode);
     openPanel(petId);
     if (providerOf(pet.model) !== previousProvider) {
       S.quotas = await window.petOffice.refreshQuota();
@@ -3132,7 +3168,7 @@ async function submitComposer(targetPetId, mode) {
     participants = [...composer.querySelectorAll('[data-pet]')].filter(input => input.checked).map(input => {
       const pet = pets.get(input.dataset.pet);
       const model = composer.querySelector('[data-model="' + pet.id + '"]').value || null;
-      return { petId: pet.id, name: pet.name, model, fallbackModel: null, use: true };
+      return { petId: pet.id, name: pet.name, model, modelMode: model ? 'locked' : 'auto', fallbackModel: pet.model || null, use: true };
     });
     if (!participants.length) {
       bubble('supervisor', '请至少选择一个 Agent', 3500);
@@ -3155,7 +3191,8 @@ async function submitComposer(targetPetId, mode) {
       const pet = pets.get(participant.petId);
       if (pet.model !== participant.model) {
         pet.model = participant.model;
-        await window.petOffice.setModel(pet.id, pet.model);
+        pet.modelMode = participant.modelMode || (pet.model ? 'locked' : 'auto');
+        await window.petOffice.setModel(pet.id, pet.model, pet.modelMode);
       }
     }));
     if (epoch !== composerSurface.epoch) return;
@@ -3231,6 +3268,10 @@ function showConfirm(taskText, participants, usePlanner, mode) {
         });
       if (epoch !== composerSurface.epoch) return;
       if (!result || !result.ok) {
+        if (mode && result && result.code === 'RUFLO_SETUP_REQUIRED') {
+          showRufloSetup(result.setup, () => showConfirm(taskText, participants, usePlanner, mode));
+          return;
+        }
         go.disabled = false;
         go.textContent = '确认开始';
         bubble('supervisor', (result && result.error) || '启动失败', 6000);
@@ -3255,6 +3296,40 @@ function showConfirm(taskText, participants, usePlanner, mode) {
   };
 }
 
+function showRufloSetup(setup, onReady) {
+  const composer = $('#composer');
+  const boss = pets.get('supervisor');
+  const checks = (setup && setup.checks) || {};
+  const rows = [
+    ['Node.js ≥ 20', checks.node], ['npm ≥ 9', checks.npm], ['npm 网络', checks.network], ['可用磁盘 ≥ 1 GB', checks.disk],
+    ['Ruflo 3.43.0 + CLI 3.43.0', checks.runtime], ['MCP 核心能力', checks.mcp],
+  ].map(([label, check]) => '<div class="ruflo-check ' + (check && check.ok ? 'ok' : 'pending') + '"><i></i><span><b>' + esc(label) + '</b><small>' + esc(check && check.value != null ? (typeof check.value === 'object' ? JSON.stringify(check.value) : String(check.value)) : '等待检查') + '</small></span></div>').join('');
+  const prerequisites = ['node', 'npm', 'network', 'disk'].every(key => !checks[key] || checks[key].ok);
+  composer.getAnimations().forEach(animation => animation.cancel());
+  composer.className = 'ui pet-composer mission-preview ruflo-setup ready';
+  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>启用 Ruflo 团队协作</b><small>首次分工需要安装固定版运行时</small></span><button class="inline-close" id="c-close">×</button></div>'
+    + '<div class="ruflo-setup-copy"><strong>Ruflo 负责任务、角色、依赖和记忆；Codex Agent 继续执行实际文件工作。</strong><p>运行时安装在 ~/.pet-office/ruflo，不会在项目中生成 .claude 或 .claude-flow。</p></div>'
+    + '<div class="ruflo-checks">' + rows + '</div><div class="approval-note">安装会通过 npm 下载固定的 ruflo@3.43.0，并把下游 CLI 同时锁定为 3.43.0。安装和修复都需要你明确确认。</div>'
+    + '<div class="composer-foot"><button class="btn" id="ruflo-later">稍后</button><button class="btn primary" id="ruflo-install"' + (prerequisites ? '' : ' disabled') + '>安装并检查</button></div></div>';
+  animateComposerRect(composerBox(), composerLayout(boss, true, Math.min(Math.round(innerHeight * .72), measureComposerHeight(610))), 220);
+  composer.querySelector('#c-close').onclick = () => closeComposer();
+  composer.querySelector('#ruflo-later').onclick = () => closeComposer();
+  composer.querySelector('#ruflo-install').onclick = async event => {
+    const allowed = await confirmAction('安装 Ruflo 运行时', '将使用 npm 下载固定版 Ruflo 3.43.0 到 Pet Office 私有目录，并运行 MCP 健康检查。是否继续？', '安装');
+    if (!allowed) return showRufloSetup(setup, onReady);
+    const button = event.currentTarget;
+    button.disabled = true;
+    bubble('supervisor', '正在安装 Ruflo，首次安装可能需要几分钟…', 10000, 'attention');
+    const result = await window.petOffice.installRuflo();
+    if (!result || !result.ok) {
+      bubble('supervisor', (result && result.error) || 'Ruflo 安装失败', 9000, 'attention');
+      return showRufloSetup((result && result.health) || setup, onReady);
+    }
+    bubble('supervisor', 'Ruflo 已安装，MCP 核心能力检查通过。', 6500);
+    onReady();
+  };
+}
+
 function showMissionPlan(mission, originalText, participants) {
   const composer = $('#composer');
   const boss = pets.get('supervisor');
@@ -3267,12 +3342,16 @@ function showMissionPlan(mission, originalText, participants) {
   }
   const waveHtml = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, items]) =>
     '<section class="plan-wave"><header><b>阶段 ' + (Number(wave) + 1) + '</b><small>' + items.length + ' 个任务</small></header>' + items.map(task =>
-      '<article class="plan-node"><span class="member-color c-' + esc(task.assigneePetId) + '"></span><div><b>' + esc(task.title) + '</b><p>' + esc(short(task.brief, 180)) + '</p><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(modelName(task.model)) + ' · ' + esc(task.mode) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small></div></article>'
+      '<article class="plan-node"><span class="member-color c-' + esc(task.assigneePetId) + '"></span><div><b>' + esc(task.title) + '</b><p>' + esc(short(task.brief, 180)) + '</p><small>' + esc(task.assigneeName || task.assigneePetId) + ' · ' + esc(task.role || 'coder') + ' · ' + esc(modelName(task.actualModel || task.model)) + ' · ' + esc(task.mode) + (task.dependsOn.length ? ' · 依赖 ' + esc(task.dependsOn.join(', ')) : '') + '</small>' + (task.modelReason ? '<em class="model-reason">' + esc(task.modelReason) + '</em>' : '') + '</div></article>'
     ).join('') + '</section>'
   ).join('');
   composer.getAnimations().forEach(animation => animation.cancel());
   composer.className = 'ui pet-composer mission-preview ready';
-  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>主管计划</b><small>确认后才会创建隔离工作区并启动 Agent</small></span><button class="inline-close" id="c-close" title="收起">×</button></div><div class="mission-plan-scroll">' + waveHtml + '</div><div class="approval-note">每个依赖波次结束后由主管检查；失败节点最多自动重派一次。冲突和高风险回写会暂停等待你。</div><div class="composer-foot"><button class="btn" id="c-back">返回修改</button><button class="btn" id="c-replan">重新规划</button><button class="btn primary" id="c-confirm-mission">确认并开工</button></div></div>';
+  const memoryHtml = (mission.memoryHits || []).length
+    ? '<details class="plan-memory"><summary>找到 ' + mission.memoryHits.length + ' 条项目经验</summary>' + mission.memoryHits.map(hit => '<p><b>' + esc(hit.key || '经验') + '</b>' + esc(short(typeof hit.value === 'string' ? hit.value : JSON.stringify(hit.value), 150)) + '</p>').join('') + '</details>'
+    : '<div class="plan-memory empty">本项目暂无可复用经验</div>';
+  const advanced = '<details class="ruflo-advanced"><summary>Ruflo 高级详情</summary><dl><dt>Swarm</dt><dd>' + esc(mission.swarmId || '—') + '</dd><dt>拓扑</dt><dd>' + esc(mission.topology || 'hierarchical') + ' · specialized · raft</dd><dt>记忆</dt><dd>' + esc(mission.memoryNamespace || '—') + '</dd><dt>版本</dt><dd>' + esc(mission.rufloVersion || '3.43.0') + '</dd></dl></details>';
+  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>Ruflo 团队计划</b><small>确认后才会创建隔离工作区并启动 Codex Agent</small></span><button class="inline-close" id="c-close" title="收起">×</button></div><div class="mission-plan-scroll">' + memoryHtml + waveHtml + advanced + '</div><div class="approval-note">安全范围：每个 Agent 只写自己的隔离工作区；依赖波次由 Ruflo 跟踪，主管复核后才安全回写。冲突、删除、二进制和范围外变更会暂停等待你。</div><div class="composer-foot"><button class="btn" id="c-back">返回修改</button><button class="btn" id="c-replan">重新规划</button><button class="btn primary" id="c-confirm-mission">确认并开工</button></div></div>';
   const height = Math.min(Math.round(innerHeight * .72), measureComposerHeight(width));
   animateComposerRect(current, composerLayout(boss, true, height), 220);
   composer.querySelector('#c-close').onclick = () => closeComposer();

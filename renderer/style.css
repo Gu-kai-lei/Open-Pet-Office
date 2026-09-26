@@ -417,6 +417,25 @@ button { -webkit-app-region: no-drag; }
 .mission-risks { margin: 6px 0 0; padding: 6px 7px 6px 20px; background: rgba(242,166,43,.07); border-radius: 7px; }
 .mission-risks li { margin-top: 3px; color: #cbd5cb; font-size: 9px; line-height: 1.45; }
 .mission-risks-title { list-style: none; margin-left: -13px; color: #f2a62b; }
+.engine-badge { display: inline-flex; margin-right: 6px; padding: 1px 6px; color: #8bd2af; background: rgba(70,176,124,.13); border: 1px solid rgba(70,176,124,.25); border-radius: 999px; font-size: 8px; vertical-align: 1px; }
+.engine-badge.legacy { color: #b9b2a7; background: rgba(148,139,126,.12); border-color: rgba(148,139,126,.25); }
+.model-reason { display: block; margin-top: 4px; color: #b89d72; font-size: 9px; font-style: normal; line-height: 1.4; }
+.memory-hit { margin-top: 8px; padding: 7px 9px; color: #95c9ad; background: rgba(70,176,124,.08); border: 1px solid rgba(70,176,124,.16); border-radius: 9px; font-size: 9px; }
+.mission-stream,.ruflo-advanced,.plan-memory { margin-top: 9px; padding: 8px 9px; color: var(--text); background: var(--soft); border: 1px solid var(--line); border-radius: 10px; }
+.mission-stream > summary,.ruflo-advanced > summary,.plan-memory > summary { cursor: pointer; color: var(--muted); font-size: 9px; font-weight: 750; list-style: none; }
+.mission-stream > summary span { float: right; }
+.mission-stream p,.plan-memory p { display: grid; gap: 2px; margin-top: 7px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.mission-stream p b,.plan-memory p b { color: var(--accent); }
+.ruflo-advanced dl { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 5px 8px; margin-top: 8px; font-size: 9px; }
+.ruflo-advanced dt { color: var(--muted); }.ruflo-advanced dd { overflow-wrap: anywhere; color: var(--text); }
+.plan-memory.empty { color: var(--muted); font-size: 9px; }
+.ruflo-setup-copy { margin: 4px 14px 8px; padding: 12px; color: var(--text); background: linear-gradient(135deg, rgba(242,166,43,.11), rgba(70,176,124,.08)); border: 1px solid var(--line); border-radius: 14px; }
+.ruflo-setup-copy strong { display: block; font-size: 11px; line-height: 1.5; }.ruflo-setup-copy p { margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.ruflo-checks { display: grid; gap: 6px; margin: 0 14px 10px; }
+.ruflo-check { display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 8px; align-items: start; padding: 7px 9px; background: var(--soft); border-radius: 10px; }
+.ruflo-check > i { width: 7px; height: 7px; margin-top: 3px; background: #d59b3b; border-radius: 50%; box-shadow: 0 0 0 3px rgba(213,155,59,.12); }
+.ruflo-check.ok > i { background: #4fab65; box-shadow: 0 0 0 3px rgba(79,171,101,.12); }
+.ruflo-check span { min-width: 0; }.ruflo-check b,.ruflo-check small { display: block; }.ruflo-check b { font-size: 10px; }.ruflo-check small { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 
 .field { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; color: var(--muted); font-size: 11px; }
 .field select, .field input, .prompt-input, .project-search, .new-project-row input {

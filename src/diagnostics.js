@@ -62,7 +62,7 @@ function status(ok, warning = false) {
   return ok ? 'ok' : (warning ? 'warning' : 'error');
 }
 
-async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth = {}, quotaCache = {} } = {}) {
+async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth = {}, quotaCache = {}, rufloHealth = null } = {}) {
   const [codex, proxy] = await Promise.all([commandVersion(), proxyHealth()]);
   let modelCount = 0;
   let catalogExists = false;
@@ -75,6 +75,14 @@ async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth =
   const appError = safeText(appServerHealth.lastError);
   const websocketUnsupported = /426|upgrade required|websocket/i.test(appError);
   const activeWriter = /active writer|already has .*writer/i.test(appError);
+  const rufloChecks = rufloHealth && rufloHealth.checks || {};
+  const rufloMcp = rufloChecks.mcp || {};
+  const rufloReady = !!(rufloHealth && rufloHealth.ready);
+  const rufloDetail = !rufloHealth
+    ? '尚未检查'
+    : (rufloReady
+      ? 'Ruflo ' + safeText(rufloHealth.version || '未知版本') + ' · MCP ' + (rufloMcp.ok ? '可用' : '待检查')
+      : '需要设置或修复 · ' + safeText(rufloMcp.value || (rufloChecks.runtime && rufloChecks.runtime.value && JSON.stringify(rufloChecks.runtime.value)) || rufloHealth.state || '运行时不可用'));
   return {
     checkedAt: Date.now(),
     items: [
@@ -89,6 +97,7 @@ async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth =
       { id: 'token', label: '额度管理令牌', status: status(fs.existsSync(ADMIN_TOKEN_FILE), true), detail: fs.existsSync(ADMIN_TOKEN_FILE) ? '已配置' : '未配置；额度功能不可用' },
       { id: 'quota', label: '额度接口', status: status(!!quotaCache.ok, !!quotaCache.stale), detail: quotaCache.ok ? '最近刷新成功' : (quotaCache.stale ? '当前显示缓存 · ' + safeText(quotaCache.error) : safeText(quotaCache.error || '尚未成功刷新')) },
       { id: 'sessions', label: 'Codex 任务监听', status: status(fs.existsSync(sessionsPath) && desktopMonitorHealth.ok !== false, fs.existsSync(sessionsPath)), detail: desktopMonitorHealth.ok === false ? safeText(desktopMonitorHealth.error) : '会话目录可读' },
+      { id: 'ruflo', label: 'Ruflo 分工运行时', status: rufloReady ? 'ok' : (rufloHealth ? 'warning' : 'error'), detail: rufloDetail },
       {
         id: 'appserver',
         label: '桌宠会话服务',

@@ -59,7 +59,19 @@ function run(t) {
       return resolve();
     }
     const prompt = t.prompt || ('Read ' + JSON.stringify(briefPath) + ' and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.');
-    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs(), '--json', '--skip-git-repo-check', '-C', t.projectDir, '--sandbox', 'workspace-write', '-o', outPath];
+    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs()];
+    if (t.rufloMcp && t.rufloMcp.command) {
+      // Per-process MCP config keeps Ruflo out of the user's global Codex
+      // config. The wrapper changes cwd to Pet Office's private runtime before
+      // Ruflo starts, so its .claude-flow state never lands in the project.
+      args.push('-c', 'mcp_servers.pet_office_ruflo.command=' + JSON.stringify(t.rufloMcp.command));
+      args.push('-c', 'mcp_servers.pet_office_ruflo.args=' + JSON.stringify(t.rufloMcp.args || []));
+      args.push('-c', 'mcp_servers.pet_office_ruflo.startup_timeout_sec=120');
+      args.push('-c', 'mcp_servers.pet_office_ruflo.tool_timeout_sec=300');
+    }
+    args.push('--json', '--skip-git-repo-check', '-C', t.projectDir,
+      '--add-dir', t.projectDir, '--add-dir', path.dirname(outPath),
+      '--sandbox', 'workspace-write', '-o', outPath);
     if (t.threadSource) args.push('--thread-source', t.threadSource);
     if (t.outputSchemaPath) args.push('--output-schema', t.outputSchemaPath);
     if (t.model) args.push('-m', t.model);
@@ -70,7 +82,11 @@ function run(t) {
     const startedAt = Date.now();
     let child;
     try {
-      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn('cmd.exe', args, {
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ...((t.rufloMcp && t.rufloMcp.env) || {}) },
+      });
       child.stdin.on('error', () => {});
       child.stdin.write(prompt, 'utf8');
       child.stdin.end();
