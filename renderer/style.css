@@ -417,6 +417,12 @@ button { -webkit-app-region: no-drag; }
 .mission-risks { margin: 6px 0 0; padding: 6px 7px 6px 20px; background: rgba(242,166,43,.07); border-radius: 7px; }
 .mission-risks li { margin-top: 3px; color: #cbd5cb; font-size: 9px; line-height: 1.45; }
 .mission-risks-title { list-style: none; margin-left: -13px; color: #f2a62b; }
+.mission-artifacts { margin-top: 9px; padding: 8px 9px; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; }
+.mission-artifacts > summary { cursor: pointer; color: var(--accent); font-size: 10px; font-weight: 750; }
+.mission-artifacts > summary span { margin-left: 5px; color: var(--muted); }
+.mission-artifact { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 10px; margin-top: 6px; padding: 7px 8px; color: var(--text); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; text-align: left; cursor: pointer; }
+.mission-artifact span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.mission-artifact b { flex: none; color: var(--accent); font-size: 9px; }
 .engine-badge { display: inline-flex; margin-right: 6px; padding: 1px 6px; color: #8bd2af; background: rgba(70,176,124,.13); border: 1px solid rgba(70,176,124,.25); border-radius: 999px; font-size: 8px; vertical-align: 1px; }
 .engine-badge.legacy { color: #b9b2a7; background: rgba(148,139,126,.12); border-color: rgba(148,139,126,.25); }
 .model-reason { display: block; margin-top: 4px; color: #b89d72; font-size: 9px; font-style: normal; line-height: 1.4; }

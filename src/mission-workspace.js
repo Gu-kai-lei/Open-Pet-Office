@@ -27,6 +27,24 @@ function hashFile(file) {
   return hash.digest('hex');
 }
 
+function isBinaryFile(file) {
+  try {
+    const handle = fs.openSync(file, 'r');
+    const buffer = Buffer.alloc(8192);
+    let length;
+    try { length = fs.readSync(handle, buffer, 0, buffer.length, 0); }
+    finally { fs.closeSync(handle); }
+    if (!length) return false;
+    let controls = 0;
+    for (let i = 0; i < length; i++) {
+      const byte = buffer[i];
+      if (byte === 0) return true;
+      if (byte < 9 || (byte > 13 && byte < 32)) controls++;
+    }
+    return controls / length > 0.03;
+  } catch { return true; }
+}
+
 function walk(root, current = root, output = {}) {
   let entries = [];
   try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return output; }
@@ -220,10 +238,11 @@ class MissionWorkspace {
     const changedSinceStart = changedFiles(mission.baseline.manifest || {}, current.manifest || {});
     if (changedSinceStart.length) return { ok: false, kind: 'baseline_changed', conflicts: changedSinceStart.slice(0, 100) };
     const deletes = changeSet.changes.filter(change => change.kind === 'deleted');
-    const binaries = changeSet.changes.filter(change => change.size > 2 * 1024 * 1024);
+    const binaries = changeSet.changes.filter(change => change.kind !== 'deleted' &&
+      (change.size > 2 * 1024 * 1024 || isBinaryFile(path.join(changeSet.filesDir, change.path))));
     const scopes = (mission.tasks || []).filter(task => task.status === 'accepted' && task.mode === 'write').flatMap(task => task.fileScopes || []);
     const outOfScope = changeSet.changes.filter(change => !scopes.some(scope => matchesScope(change.path, scope)));
-    return { ok: true, highRisk: deletes.length > 0 || binaries.length > 3 || outOfScope.length > 0, deletes, binaries, outOfScope };
+    return { ok: true, highRisk: deletes.length > 0 || binaries.length > 0 || outOfScope.length > 0, deletes, binaries, outOfScope };
   }
 
   applyFinal(mission, changeSet) {

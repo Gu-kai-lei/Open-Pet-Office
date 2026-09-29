@@ -167,7 +167,8 @@ class MissionStore {
         mission.engine = mission.engine || 'legacy';
         mission.schemaVersion = Number(mission.schemaVersion) || 1;
         mission.legacy = mission.schemaVersion < 2 || mission.engine !== 'ruflo';
-        if (ACTIVE.has(mission.status)) {
+        if (ACTIVE.has(mission.status) && (mission.legacy || !['awaiting_confirmation', 'needs_input'].includes(mission.status))) {
+          mission.interruptedFrom = mission.status;
           mission.status = 'interrupted';
           mission.interruptionReason = mission.legacy
             ? '这是旧版 Mission，仅供查看；可复制为 Ruflo 任务重新执行。'

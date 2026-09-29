@@ -100,6 +100,9 @@ assert.equal(store.load(project, saved.id).id, 'recover');
 const loaded = store.loadProjects([{ id: 'p1', name: 'P', path: project }]).find(item => item.id === 'recover');
 assert.equal(loaded.status, 'interrupted');
 assert.equal(loaded.tasks[0].status, 'interrupted');
+const waiting = { id: 'waiting-confirmation', projectPath: project, projectId: 'p1', schemaVersion: 2, engine: 'ruflo', status: 'awaiting_confirmation', tasks: [{ id: 't', status: 'blocked', attempts: 0 }], createdAt: Date.now(), updatedAt: Date.now() };
+store.create(waiting);
+assert.equal(store.loadProjects([{ id: 'p1', name: 'P', path: project }]).find(item => item.id === waiting.id).status, 'awaiting_confirmation', 'restart must preserve the user confirmation gate');
 
 const workspace = new MissionWorkspace({ runtimeRoot: runtime });
 const probeMission = { id: 'probe', projectPath: project, tasks: [] };
@@ -113,6 +116,12 @@ fs.writeFileSync(path.join(probeTask2.workspace, 'same.txt'), 'two');
 probeTask1.changeSet = workspace.collect(probeMission, probeTask1, path.join(root, 'artifacts-1'));
 probeTask2.changeSet = workspace.collect(probeMission, probeTask2, path.join(root, 'artifacts-2'));
 assert.equal(workspace.applyAccepted(probeMission, [probeTask1, probeTask2]).ok, false);
+const binaryProbe = { id: 'binary-probe', projectPath: project, tasks: [{ status: 'accepted', mode: 'write', fileScopes: ['image.bin'] }] };
+workspace.prepareMission(binaryProbe);
+const binarySet = { filesDir: path.join(root, 'binary-files'), changes: [{ path: 'image.bin', kind: 'added', size: 4 }] };
+fs.mkdirSync(binarySet.filesDir, { recursive: true });
+fs.writeFileSync(path.join(binarySet.filesDir, 'image.bin'), Buffer.from([1, 0, 2, 3]));
+assert.equal(workspace.preflightMain(binaryProbe, binarySet).highRisk, true, 'one binary file needs explicit approval');
 
 const gitProject = path.join(root, 'git-project');
 fs.mkdirSync(gitProject, { recursive: true });
@@ -194,6 +203,110 @@ manager = new MissionManager({
   assert.equal(presentCalls[0].threadId, result.supervisorThreadId);
   assert.equal(fs.readFileSync(path.join(project, 'a.txt'), 'utf8'), 'a.txt\n');
   assert.equal(fs.readFileSync(path.join(project, 'b.txt'), 'utf8'), 'b.txt\n');
+  assert(manager.artifactPath(result.id, 'a.txt') && fs.existsSync(manager.artifactPath(result.id, 'a.txt')));
+  assert.equal(manager.artifactPath(result.id, '../base.txt'), null, 'artifact paths must not escape the Mission');
+  assert((await manager.publishMemory(result.id)).ok);
+  const otherProject = path.join(root, 'other-project');
+  fs.mkdirSync(otherProject, { recursive: true });
+  const otherManager = new MissionManager({
+    runtimeRoot: path.join(root, 'other-runtime'), projects: () => [{ id: 'p2', name: '另一个项目', path: otherProject }],
+    roster: manager.roster, supervisorModel: () => null, planner, dispatcher: { cancel() {} }, ruflo: manager.ruflo,
+  });
+  const crossProject = await otherManager.createDraft({ taskText: '跨项目经验隔离', projectId: 'p2', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(crossProject.ok);
+  assert(crossProject.mission.memoryHits.some(hit => hit.source === 'published'), 'user-published patterns should be available in another project');
+  assert(crossProject.mission.memoryHits.every(hit => hit.namespace === 'pet-office-patterns'), 'another project must not read private project memory');
+  await otherManager.cancel(crossProject.mission.id);
+
+  const originalUpdate = manager.ruflo.updateTask.bind(manager.ruflo);
+  const stalled = await manager.createDraft({ taskText: '验证同步失败不会启动工作者', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(stalled.ok);
+  manager.ruflo.updateTask = async () => { throw new Error('MCP unavailable'); };
+  const blocked = await manager.confirm(stalled.mission.id);
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.mission.status, 'needs_input');
+  assert(blocked.mission.tasks.every(task => !task.attempts), 'failed Ruflo confirmation must not execute workers');
+  manager.ruflo.updateTask = originalUpdate;
+  const restored = await manager.resume(stalled.mission.id);
+  assert.equal(restored.mission.status, 'awaiting_confirmation', 'repair must return to the confirmation page');
+  await manager.cancel(stalled.mission.id);
+
+  const originalReview = planner.reviewWave;
+  let failReview = true;
+  planner.reviewWave = async ({ tasks }) => {
+    if (failReview) { failReview = false; return { ok: false, error: 'temporary reviewer failure' }; }
+    return { ok: true, value: { summary: '复核通过', decisions: tasks.map(task => ({ taskId: task.id, decision: 'accept', reason: '内容已核验' })) } };
+  };
+  const reviewDraft = await manager.createDraft({ taskText: '验证复核失败后只重试复核', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(reviewDraft.ok);
+  assert((await manager.confirm(reviewDraft.mission.id)).ok);
+  const reviewLimit = Date.now() + 6000;
+  while (Date.now() < reviewLimit && manager.get(reviewDraft.mission.id).status !== 'needs_input') await new Promise(resolve => setTimeout(resolve, 20));
+  const waitingReview = manager.get(reviewDraft.mission.id);
+  assert.equal(waitingReview.pendingAction.kind, 'review_failed');
+  assert.equal(waitingReview.tasks[0].attempts, 1);
+  assert((await manager.resume(reviewDraft.mission.id)).ok);
+  while (Date.now() < reviewLimit && !['completed', 'failed', 'needs_input'].includes(manager.get(reviewDraft.mission.id).status)) await new Promise(resolve => setTimeout(resolve, 20));
+  const reviewed = manager.get(reviewDraft.mission.id);
+  assert.equal(reviewed.status, 'completed');
+  assert.equal(reviewed.tasks[0].attempts, 1, 'review retry must not rerun a successful worker');
+  planner.reviewWave = originalReview;
+
+  const originalStartTask = dispatcher.startTask;
+  dispatcher.startTask = task => setImmediate(() => {
+    manager.handleTaskEvent({ type: 'started', taskId: task.id });
+    fs.writeFileSync(task.resultPath, JSON.stringify({
+      outcome: 'failed', summary: 'Windows sandbox 初始化失败', changedFiles: [], artifacts: [],
+      validation: [], messages: [], blockers: ['helper_unknown_error: apply deny-read ACLs'],
+    }));
+    manager.handleTaskEvent({ type: 'done', taskId: task.id, elapsedMs: 2 });
+  });
+  const environmentDraft = await manager.createDraft({ taskText: '验证沙箱故障暂停自动重试', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(environmentDraft.ok);
+  assert((await manager.confirm(environmentDraft.mission.id)).ok);
+  const environmentLimit = Date.now() + 6000;
+  while (Date.now() < environmentLimit && manager.get(environmentDraft.mission.id).status !== 'needs_input') await new Promise(resolve => setTimeout(resolve, 20));
+  const environmentPaused = manager.get(environmentDraft.mission.id);
+  assert.equal(environmentPaused.pendingAction.kind, 'worker_environment');
+  assert.equal(environmentPaused.tasks[0].attempts, 1, 'environment failure must not trigger an automatic second attempt');
+  assert.equal(environmentPaused.tasks[1].attempts, 0, 'dependent work must remain unstarted');
+  assert.equal((await manager.resume(environmentDraft.mission.id)).ok, false, 'replay requires an explicit choice');
+  dispatcher.startTask = originalStartTask;
+  assert((await manager.resume(environmentDraft.mission.id, true)).ok);
+  while (Date.now() < environmentLimit && !['completed', 'failed', 'needs_input'].includes(manager.get(environmentDraft.mission.id).status)) await new Promise(resolve => setTimeout(resolve, 20));
+  const environmentRecovered = manager.get(environmentDraft.mission.id);
+  assert.equal(environmentRecovered.status, 'completed', JSON.stringify(environmentRecovered));
+  assert.equal(environmentRecovered.tasks[0].attempts, 2, 'explicit replay should run only the failed node again');
+  assert.equal(environmentRecovered.tasks[1].attempts, 1);
+
+  const setupRecovery = {
+    id: 'setup-recovery-test', schemaVersion: 2, engine: 'ruflo', legacy: false,
+    projectId: 'p1', projectName: '测试项目', projectPath: project, objective: '恢复 Ruflo 初始化阶段',
+    status: 'interrupted', interruptedFrom: 'setup', participants, tasks: [], plan: null,
+    memoryNamespace: manager.ruflo.namespace('p1'), createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  manager.missions.set(setupRecovery.id, setupRecovery);
+  manager.store.create(setupRecovery);
+  const setupResult = await manager.resume(setupRecovery.id);
+  assert.equal(setupResult.mission.status, 'awaiting_confirmation');
+  assert(setupResult.mission.swarmId && setupResult.mission.tasks.every(task => task.rufloTaskId), 'setup recovery must register a real Ruflo plan before confirmation');
+  await manager.cancel(setupRecovery.id);
+
+  const partialDraft = await manager.createDraft({ taskText: '验证只补注册丢失的任务', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(partialDraft.ok);
+  const partial = manager.missions.get(partialDraft.mission.id);
+  const retainedTaskId = partial.tasks[0].rufloTaskId;
+  const missingTaskId = partial.tasks[1].rufloTaskId;
+  partial.status = 'interrupted'; partial.interruptedFrom = 'planning';
+  manager.ruflo.tasks.delete(missingTaskId);
+  const originalReconcile = manager.ruflo.reconcile.bind(manager.ruflo);
+  manager.ruflo.reconcile = async () => ({ ok: false, differences: [{ kind: 'task_missing', taskId: partial.tasks[1].id, rufloTaskId: missingTaskId }] });
+  const repairedPlan = await manager.resume(partial.id);
+  manager.ruflo.reconcile = originalReconcile;
+  assert.equal(repairedPlan.mission.status, 'awaiting_confirmation');
+  assert.equal(repairedPlan.mission.tasks[0].rufloTaskId, retainedTaskId, 'an existing Ruflo task must not be created twice');
+  assert.notEqual(repairedPlan.mission.tasks[1].rufloTaskId, missingTaskId, 'a missing unstarted task must be registered again');
+  await manager.cancel(partial.id);
   console.log('mission tests passed');
   if (path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)) fs.rmSync(root, { recursive: true, force: true });
 })().catch(error => { console.error(error); process.exitCode = 1; });

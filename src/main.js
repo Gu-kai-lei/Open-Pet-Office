@@ -968,61 +968,9 @@ function checkBatchDone(batch) {
   send('batch:done', { batchId: batch.id, file, tasks: serializeBatch(batch) });
 }
 
-async function startDelegation({ taskText, projectId, participants, usePlanner }) {
-  const proj = projectId ? state.projects.find(p => p.id === projectId) : activeProject();
-  if (!proj) return { ok: false, error: '还没有项目。请先新建或选择一个项目。' };
-  if (proj.archived) return { ok: false, error: '这个项目已归档，请先恢复项目。' };
-  const plist = (participants || []).filter(p => p.use);
-  if (!plist.length) return { ok: false, error: '至少选择一个参与者。' };
-  dispatcher.ensureProjectDirs(proj.path);
-  const batchId = 'b' + (++batchSeq).toString(36) + Date.now().toString(36);
-  const batch = { id: batchId, projectId: proj.id, projectName: proj.name, projectPath: proj.path, taskText: String(taskText || ''), tasks: new Map(), usePlanner: !!usePlanner, status: usePlanner ? 'planning' : 'running', createdAt: Date.now() };
-  batches.set(batchId, batch);
-
-  let briefs;
-  if (usePlanner) {
-    send('batch:update', { batchId, phase: 'planning', taskText: batch.taskText, projectId: proj.id, projectName: proj.name });
-    let plan;
-    try {
-      plan = await planner.splitTask({ projectDir: proj.path, text: taskText, participants: plist.map(p => p.name) });
-    } catch (error) {
-      batch.status = 'failed';
-      batches.delete(batchId);
-      send('batch:update', { batchId, phase: 'failed', error: error.message, tasks: [] });
-      return { ok: false, error: '主管规划失败：' + error.message };
-    }
-    briefs = new Map();
-    for (const p of plist) {
-      const hit = plan ? plan.find(x => x.name === p.name) : null;
-      briefs.set(p.petId, (hit && hit.brief) || taskText);
-    }
-  } else {
-    briefs = new Map(plist.map(p => [p.petId, taskText]));
-  }
-
-  for (const p of plist) {
-    const id = batchId + '-' + p.petId;
-    const cap = state.caps[p.petId];
-    const tok = petSessionTokens.get(p.petId) || 0;
-    if (cap && tok >= cap) {
-      const capped = { id, source: 'delegation', petId: p.petId, petName: p.name, model: p.model || '(默认)', brief: briefs.get(p.petId), status: 'capped', startedAt: Date.now(), tokens: tok, threadId: null, cwd: proj.path, resultPath: '' };
-      batch.tasks.set(id, capped);
-      persistTask(batch, capped);
-      continue;
-    }
-    const task = {
-      id, source: 'delegation', petId: p.petId, petName: p.name, model: p.model || null, brief: briefs.get(p.petId),
-      status: 'queued', startedAt: Date.now(), tokens: 0, threadId: null,
-      cwd: proj.path,
-      resultPath: path.join(proj.path, 'tasks', id + '.result.md'),
-    };
-    batch.tasks.set(id, task);
-    persistTask(batch, task);
-    dispatcher.startTask({ id, petId: p.petId, petName: p.name, model: p.model || null, brief: briefs.get(p.petId), projectDir: proj.path });
-  }
-  batch.status = 'running';
-  send('batch:update', { batchId, phase: 'running', tasks: serializeBatch(batch) });
-  return { ok: true, batchId };
+async function startDelegation({ taskText, projectId, participants }) {
+  // Compatibility entry points use the same confirmation gate as the UI.
+  return missionManager.createDraft({ taskText, projectId, participants });
 }
 
 function onTaskEvent(ev) {
@@ -1090,8 +1038,11 @@ function onBridgeOrder(order) {
         model: a.model || null,
         use: true,
       }));
-      bridge.writeResult('bridge-ack', '已接受任务。项目: ' + proj.name + '；参与者: ' + participants.map(p => p.name).join(', '), { acceptedAt: Date.now(), project: proj.name });
-      startDelegation({ taskText: order.task || '(无任务描述)', projectId: proj.id, participants, usePlanner: order.usePlanner !== false });
+      startDelegation({ taskText: order.task || '(无任务描述)', projectId: proj.id, participants, usePlanner: order.usePlanner !== false })
+        .then(result => bridge.writeResult(result.ok ? 'bridge-ack' : 'bridge-error', result.ok
+          ? 'Ruflo 计划已生成，等待在 Pet Office 中确认：' + result.mission.id
+          : 'Ruflo 任务未建立：' + result.error, { acceptedAt: Date.now(), project: proj.name, missionId: result.mission && result.mission.id }))
+        .catch(error => bridge.writeResult('bridge-error', String(error && error.message || error), null));
     } else if (order.action === 'message') {
       send('pet:message', { text: String(order.text || '') });
       bridge.writeResult('message-ack', '桌宠已显示消息: ' + order.text, null);
@@ -1347,9 +1298,11 @@ function createWindow() {
             : captureView === 'mission-plan'
               ? "(() => { const plan = { id: 'mission-plan-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-4100', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', memoryHits: [{ key: 'mission-accessible-deliverables', value: '复杂文档任务先核对附件可访问性，再拆分写作与独立复核。', similarity: .91 }], status: 'awaiting_confirmation', tasks: [{ id: 'research', title: '梳理现有架构', brief: '检查当前调度、状态与数据边界，列出需要保持兼容的接口。', assigneePetId: 'w1', assigneeName: '小蓝', model: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol', role: 'researcher', modelReason: '用户已锁定模型，适合长上下文项目分析', dependsOn: [], mode: 'read', wave: 0 }, { id: 'engine', title: '实现 Mission 状态机', brief: '加入持久化、依赖波次、阶段检查与恢复。', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', actualModel: 'deepseek/deepseek-v4-flash', role: 'coder', modelReason: 'Ruflo 按中等复杂度匹配本机可用编码模型', dependsOn: ['research'], mode: 'write', wave: 1 }, { id: 'qa', title: '端到端核验', brief: '验证冲突、取消、恢复与最终回写。', assigneePetId: 'w3', assigneeName: '小橙', model: 'zhipu-bigmodel-coding/glm-5.3', actualModel: 'zhipu-bigmodel-coding/glm-5.3', role: 'reviewer', modelReason: '独立复核使用不同模型降低同源误判', dependsOn: ['engine'], mode: 'verify', wave: 2 }] }; showMissionPlan(plan, '实现真正的主管 Agent', [{ petId: 'w1' }, { petId: 'w2' }, { petId: 'w3' }]); return { nodes: plan.tasks.length }; })()"
             : captureView === 'mission-needs-input'
-              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-attention-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-attention', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'degraded', error: 'Ruflo MCP 已退出，等待重新连接' }, projectName: 'Pet Office', objective: '整理发布说明并完成 Windows 验证', status: 'needs_input', currentWave: 1, error: 'Ruflo MCP 连接中断；本地状态已保留，修复后可对账恢复。', pendingAction: { kind: 'ruflo_runtime', action: 'repair' }, createdAt: now - 60000, updatedAt: now, memoryHits: [], messages: [{ from: 'system', to: 'supervisor', summary: 'MCP 进程退出，已暂停新任务调度。' }], tasks: [{ id: 'build', title: '生成 Windows portable', brief: '等待 Ruflo 恢复后继续', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 1, attempts: 1, status: 'interrupted', error: '运行时连接中断' }] }]; tasks = [{ id: 'mission-attention-demo:supervisor', missionId: 'mission-attention-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); return { missions: missions.length, status: missions[0].status }; })()"
+              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-attention-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-attention', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'degraded', error: 'Ruflo MCP 已退出，等待重新连接' }, projectName: 'Pet Office', objective: '整理发布说明并完成 Windows 验证', status: 'needs_input', currentWave: 1, error: 'Ruflo MCP 连接中断；本地状态已保留，修复后可对账恢复。', pendingAction: { kind: 'ruflo_runtime', action: 'repair' }, createdAt: now - 60000, updatedAt: now, memoryHits: [], messages: [{ from: 'system', to: 'supervisor', summary: 'MCP 进程退出，已暂停新任务调度。' }], tasks: [{ id: 'build', title: '生成 Windows portable', brief: '等待 Ruflo 恢复后继续', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 1, attempts: 1, status: 'interrupted', error: '运行时连接中断' }] }]; tasks = [{ id: 'mission-attention-demo:supervisor', missionId: 'mission-attention-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, status: missions[0].status }; })()"
+            : captureView === 'mission-worker-environment'
+              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-environment-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo', projectName: 'Pet Office', objective: '协作完成教学资料并独立核验', status: 'needs_input', currentWave: 0, error: '工作者的 Windows 沙箱初始化失败，文件操作不可用。已暂停自动重试；修复运行环境后可明确重新执行失败节点。', pendingAction: { kind: 'worker_environment', taskIds: ['draft'] }, createdAt: now - 60000, updatedAt: now, tasks: [{ id: 'draft', title: '生成教学讲义', assigneePetId: 'w1', assigneeName: '小蓝', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'failed', error: 'helper_unknown_error: apply deny-read ACLs' }, { id: 'verify', title: '独立核验讲义', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'zhipu-bigmodel-coding/glm-5.3', role: 'reviewer', dependsOn: ['draft'], mode: 'verify', wave: 1, attempts: 0, status: 'blocked' }] }]; tasks = [{ id: 'mission-environment-demo:supervisor', missionId: 'mission-environment-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); const scroll = document.querySelector('.activity-scroll'); if (scroll) scroll.scrollTop = scroll.scrollHeight; return { status: missions[0].status, replayButton: !!document.querySelector('[data-mission-replay]') }; })()"
             : captureView === 'mission'
-  ? "(() => { const now = Date.now(); missions = [{ id: 'mission-demo', projectName: 'Pet Office', objective: '实现真正的主管 Agent 与安全合并流程', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-finished', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'ready' }, memoryHits: [{ key: 'safe-apply', value: '复核通过后再回写主项目。' }], messages: [{ from: 'w1', to: 'supervisor', summary: '架构实现完成并通过恢复测试。' }, { from: 'supervisor', to: 'w3', summary: '请独立核验安全回写范围。' }], status: 'partial', currentWave: 2, supervisorThreadId: 'supervisor-thread', finalReview: { verdict: 'partial', summary: '交付链路已闭合：三个节点全部接受，产出隔离工作区实现与回归报告。存在非致命缺失：外部基准材料不可访问，两项推导只能做自洽性核验，无法与课程原件对齐。', validationSummary: '独立核验完成 SHA256 前后比对与关键路径重算，链接完整性检查全部通过；缺少外部真值是主要局限。', risks: ['来源材料在执行环境中不可访问，建议对照原始课件核对符号约定与侧重。', '自测题中一道答案与独立重算不一致，使用前请先修正。'] }, createdAt: now - 120000, updatedAt: now, tasks: [{ id: 'architecture', title: '建立 Mission 持久化与依赖图', brief: '实现任务数据模型和恢复流程', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'accepted', review: { reason: '结构和恢复测试通过' } }, { id: 'runtime', title: '隔离工作区与安全回写', brief: '实现 worktree、快照和冲突检测', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['architecture'], mode: 'write', wave: 1, attempts: 1, status: 'accepted', review: { reason: '工作区变更与交付物一致' } }, { id: 'verify', title: '回归与最终核验', brief: '运行测试并检查状态准确性', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['runtime'], mode: 'verify', wave: 2, attempts: 1, status: 'accepted', review: { reason: '回归与最终核验通过' } }] }]; tasks = [{ id: 'mission-demo:supervisor', missionId: 'mission-demo', source: 'mission', petId: 'supervisor', petName: 'Michael', brief: missions[0].objective, progress: '主管已完成最终复核并生成可读总结', progressStage: 'finishing', status: 'done', threadId: 'supervisor-thread', startedAt: now - 120000, updatedAt: now }]; openActivity(); const demoCard = document.querySelector('.mission-card'); if (demoCard) demoCard.open = true; const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, nodes: missions[0].tasks.length, verdict: missions[0].finalReview.verdict }; })()"
+  ? "(() => { const now = Date.now(); missions = [{ id: 'mission-demo', projectName: 'Pet Office', objective: '实现真正的主管 Agent 与安全合并流程', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-finished', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'ready' }, memoryHits: [{ key: 'safe-apply', value: '复核通过后再回写主项目。' }], messages: [{ from: 'w1', to: 'supervisor', summary: '架构实现完成并通过恢复测试。' }, { from: 'supervisor', to: 'w3', summary: '请独立核验安全回写范围。' }], status: 'partial', currentWave: 2, artifacts: [{ path: 'deliverables/study-guide.md', kind: 'added' }, { path: 'reviews/verification-report.md', kind: 'added' }], supervisorThreadId: 'supervisor-thread', finalReview: { verdict: 'partial', summary: '交付链路已闭合：三个节点全部接受，产出隔离工作区实现与回归报告。存在非致命缺失：外部基准材料不可访问，两项推导只能做自洽性核验，无法与课程原件对齐。', validationSummary: '独立核验完成 SHA256 前后比对与关键路径重算，链接完整性检查全部通过；缺少外部真值是主要局限。', risks: ['来源材料在执行环境中不可访问，建议对照原始课件核对符号约定与侧重。', '自测题中一道答案与独立重算不一致，使用前请先修正。'] }, createdAt: now - 120000, updatedAt: now, tasks: [{ id: 'architecture', title: '建立 Mission 持久化与依赖图', brief: '实现任务数据模型和恢复流程', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'accepted', review: { reason: '结构和恢复测试通过' } }, { id: 'runtime', title: '隔离工作区与安全回写', brief: '实现 worktree、快照和冲突检测', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['architecture'], mode: 'write', wave: 1, attempts: 1, status: 'accepted', review: { reason: '工作区变更与交付物一致' } }, { id: 'verify', title: '回归与最终核验', brief: '运行测试并检查状态准确性', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['runtime'], mode: 'verify', wave: 2, attempts: 1, status: 'accepted', review: { reason: '回归与最终核验通过' } }] }]; tasks = [{ id: 'mission-demo:supervisor', missionId: 'mission-demo', source: 'mission', petId: 'supervisor', petName: 'Michael', brief: missions[0].objective, progress: '主管已完成最终复核并生成可读总结', progressStage: 'finishing', status: 'done', threadId: 'supervisor-thread', startedAt: now - 120000, updatedAt: now }]; openActivity(); const demoCard = document.querySelector('.mission-card'); if (demoCard) demoCard.open = true; const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, nodes: missions[0].tasks.length, verdict: missions[0].finalReview.verdict }; })()"
             : captureView === 'activity-live'
               ? "openActivity()"
             : captureView === 'live-task-real'
@@ -1523,7 +1476,15 @@ ipcMain.handle('mission:confirm', (e, id) => missionManager.confirm(id));
 ipcMain.handle('mission:regenerate', async (e, id) => missionManager.regenerate(id));
 ipcMain.handle('mission:cancel', (e, id) => missionManager.cancel(id));
 ipcMain.handle('mission:cancelTask', (e, payload = {}) => missionManager.cancelTask(payload.missionId, payload.taskId));
-ipcMain.handle('mission:resume', async (e, id) => missionManager.resume(id));
+ipcMain.handle('mission:resume', async (e, payload) => missionManager.resume(typeof payload === 'string' ? payload : payload.id, !!(payload && payload.allowReplay)));
+ipcMain.handle('mission:openArtifact', async (e, payload = {}) => {
+  try {
+    const file = missionManager.artifactPath(payload.missionId, payload.relativePath);
+    if (!file) return { ok: false, error: '产物不存在或不在本 Mission 的交付范围内。' };
+    const error = await shell.openPath(file);
+    return error ? { ok: false, error } : { ok: true };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 ipcMain.handle('mission:list', () => missionManager.snapshot());
 ipcMain.handle('mission:get', (e, id) => missionManager.get(id));
 ipcMain.handle('mission:resolveConflict', (e, payload = {}) => missionManager.resolveConflict(payload.missionId, payload.action));
@@ -1762,7 +1723,7 @@ ipcMain.handle('petdex:open', async () => {
 ipcMain.handle('quota:refresh', async () => { await refreshQuotas(true); return quotaCache; });
 ipcMain.handle('diagnostics:get', async () => {
   let rufloHealth = null;
-  try { rufloHealth = await ruflo.health(state.activeProjectId, { probe: false }); }
+  try { rufloHealth = await ruflo.health(state.activeProjectId, { probe: true }); }
   catch (error) { rufloHealth = { ready: false, state: 'error', checks: { mcp: { ok: false, value: error.message } } }; }
   return diagnostics.collectDiagnostics({
     appServerHealth: appServer.health(),

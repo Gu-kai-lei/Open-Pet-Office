@@ -141,10 +141,13 @@ class RufloAdapter {
   completeTask(projectId, taskId, result) { return this.call(projectId, 'task_complete', { taskId, result: sanitizeMemory(result) }); }
 
   async searchMemory(projectId, { query, namespace, limit = 5, threshold = 0.7 } = {}) {
+    const targetNamespace = namespace || this.namespace(projectId);
+    const projectExperience = targetNamespace === this.namespace(projectId);
     const result = await this.call(projectId, 'memory_search', {
-      query, namespace: namespace || this.namespace(projectId), limit: Math.min(5, limit), threshold, smart: true,
+      query, namespace: targetNamespace, limit: projectExperience ? 20 : Math.min(5, limit), threshold, smart: true,
     });
-    return normalizeHits(result).filter(hit => hit.similarity >= threshold).slice(0, 5);
+    return normalizeHits(result).filter(hit => hit.similarity >= threshold &&
+      (!projectExperience || (!String(hit.key || '').startsWith('message-') && !hit.tags.includes('message')))).slice(0, Math.min(5, limit));
   }
 
   storeMemory(projectId, { key, value, namespace, tags = [] } = {}) {
@@ -174,6 +177,7 @@ class RufloAdapter {
     const event = this.recordEvent(projectId, 'message.sent', { missionId, taskId, from, to, type, summary });
     await this.storeMemory(projectId, {
       key: ['message', missionId, taskId || 'mission', event.sequence].join('-'),
+      namespace: this.namespace(projectId) + '-messages',
       value: { missionId, taskId, from, to, type, summary },
       tags: ['message', 'mission:' + missionId, 'to:' + to],
     });
@@ -188,9 +192,21 @@ class RufloAdapter {
     const rows = Array.isArray(remote) ? remote : (remote.tasks || remote.items || []);
     const byId = new Map(rows.map(task => [task.taskId || task.id, task]));
     for (const task of mission.tasks || []) {
-      if (!task.rufloTaskId) continue;
+      if (!task.rufloTaskId) {
+        if (task.attempts) differences.push({ kind: 'task_unbound', taskId: task.id, local: task.status });
+        continue;
+      }
       const match = byId.get(task.rufloTaskId);
       if (!match) differences.push({ kind: 'task_missing', taskId: task.id, rufloTaskId: task.rufloTaskId });
+      else {
+        const remoteStatus = String(match.status || match.state || '').toLowerCase();
+        const localStatus = String(task.status || '').toLowerCase();
+        if ((localStatus === 'accepted' && remoteStatus && remoteStatus !== 'completed') ||
+            (remoteStatus === 'completed' && !['accepted', 'succeeded'].includes(localStatus)) ||
+            (localStatus === 'cancelled' && ['completed', 'in_progress'].includes(remoteStatus))) {
+          differences.push({ kind: 'task_status', taskId: task.id, local: localStatus, remote: remoteStatus });
+        }
+      }
     }
     return { ok: differences.length === 0, swarm, tasks: rows, differences };
   }

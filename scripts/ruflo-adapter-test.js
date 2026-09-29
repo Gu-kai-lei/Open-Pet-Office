@@ -56,7 +56,9 @@ process.stdin.on('data', chunk => {
         if (name === 'swarm_init') return { success: true, swarmId: 's1' };
         if (name === 'agent_spawn') return { success: true, agentId: args.agentId };
         if (name === 'task_create') return { success: true, taskId: 'rt1' };
-        if (name === 'memory_search') return { results: [{ key: 'pattern', value: 'safe', similarity: .9 }] };
+        if (name === 'swarm_status') return { status: 'running', swarmId: 's1' };
+        if (name === 'task_list') return { tasks: [{ taskId: 'rt1', status: 'pending' }] };
+        if (name === 'memory_search') return { results: [{ key: 'message-old-task', value: 'temporary chat', similarity: .95 }, { key: 'pattern', value: 'safe', similarity: .9 }] };
         return { success: true };
       } };
     },
@@ -75,6 +77,11 @@ process.stdin.on('data', chunk => {
   const routeCall = calls.find(call => call.name === 'hooks_route');
   assert(routeCall && routeCall.args.useSemanticRouter === false);
   assert.equal((await adapter.searchMemory('p1', { query: 'pattern', threshold: .7 })).length, 1);
+  await adapter.sendMessage('p1', { missionId: 'm1', from: 'w1', to: 'supervisor', summary: 'temporary context' });
+  const storedMessage = calls.find(call => call.name === 'memory_store' && String(call.args.key).startsWith('message-'));
+  assert.equal(storedMessage.args.namespace, projectNamespace('p1') + '-messages', 'team messages must not crowd reusable project memory');
+  const mismatch = await adapter.reconcile('p1', { swarmId: 's1', tasks: [{ id: 't1', rufloTaskId: 'rt1', status: 'accepted' }] });
+  assert(mismatch.differences.some(item => item.kind === 'task_status'), 'accepted local task must be checked against Ruflo completion');
 
   const fake = new FakeRufloAdapter();
   await fake.storeMemory('A', { namespace: fake.namespace('A'), value: 'A only' });
@@ -83,9 +90,11 @@ process.stdin.on('data', chunk => {
   assert.equal((await fake.searchMemory('A', { namespace: fake.namespace('B') })).length, 0);
 
   console.log('ruflo adapter tests passed');
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 })().catch(error => {
   console.error(error);
-  if (path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)) fs.rmSync(root, { recursive: true, force: true });
+  if (path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)) {
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
+  }
   process.exitCode = 1;
 });

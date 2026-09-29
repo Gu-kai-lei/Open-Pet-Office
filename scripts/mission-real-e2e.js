@@ -17,6 +17,7 @@ const supervisorModel = process.argv[3] || 'deepseek/deepseek-v4-flash';
 const workerOneModel = process.argv[4] || 'gpt-5.6-sol';
 const workerTwoModel = process.argv[5] || 'zhipu-bigmodel-coding/glm-5.3';
 const runRoot = path.join(outputRoot, 'run-' + Date.now().toString(36));
+const projectId = 'e2e-' + path.basename(runRoot);
 const project = path.join(runRoot, 'project');
 const runtime = path.join(runRoot, 'runtime');
 const resultFile = path.join(runRoot, 'result.json');
@@ -41,7 +42,7 @@ let manager;
 const timeline = [];
 manager = new MissionManager({
   runtimeRoot: runtime,
-  projects: () => [{ id: 'e2e', name: 'Mission E2E', path: project }],
+  projects: () => [{ id: projectId, name: 'Mission E2E', path: project }],
   roster: () => [
     { id: 'w1', name: 'Alpha Agent', model: workerOneModel },
     { id: 'w2', name: 'Beta Agent', model: workerTwoModel },
@@ -77,7 +78,7 @@ function persist(extra = {}) {
 async function main() {
   const draft = await manager.createDraft({
     taskText: objective,
-    projectId: 'e2e',
+    projectId,
     participants: [
       { petId: 'w1', name: 'Alpha Agent', model: workerOneModel, modelMode: 'locked', use: true },
       { petId: 'w2', name: 'Beta Agent', model: workerTwoModel, modelMode: 'locked', use: true },
@@ -97,7 +98,7 @@ async function main() {
     if (['completed', 'partial', 'failed', 'needs_input', 'cancelled'].includes(current.status)) break;
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  if (!latest || latest.status !== 'completed') throw new Error('Mission did not complete: ' + JSON.stringify(latest));
+  if (!latest || latest.status !== 'completed') throw new Error('Mission did not complete: status=' + (latest && latest.status || 'unknown') + '; tasks=' + (latest && latest.tasks || []).map(task => task.id + ':' + task.status + (task.error ? ':' + task.error : '')).join(', '));
   const alpha = fs.readFileSync(path.join(project, 'deliverables', 'alpha.txt'), 'utf8');
   const beta = fs.readFileSync(path.join(project, 'deliverables', 'beta.txt'), 'utf8');
   if (!alpha.includes('ALPHA_OK') || !beta.includes('BETA_OK')) throw new Error('final files do not contain expected markers');
@@ -106,10 +107,13 @@ async function main() {
 }
 
 main().catch(error => {
+  manager.shutdown();
+  if (latest && latest.id) latest = manager.get(latest.id) || latest;
   persist({ ok: false, error: error.stack || String(error) });
   console.error(error.stack || error);
   process.exitCode = 1;
 }).finally(() => {
+  manager.shutdown();
   dispatcher.shutdown();
   planner.shutdown();
   ruflo.shutdown();

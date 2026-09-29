@@ -33,7 +33,7 @@ function fixture(planner = {}) {
   return manager;
 }
 function mission(id = 'm', tasks = []) {
-  return { id, status: 'running', projectPath: root, participants: [{ petId: 'w1', model: 'allowed' }], tasks };
+  return { id, status: 'running', projectPath: root, participants: [{ petId: 'w1', model: 'allowed' }], tasks: tasks.map(task => ({ rufloTaskId: 'remote-' + task.id, ...task })) };
 }
 function clientFixture() {
   const children = [];
@@ -99,6 +99,16 @@ function clientFixture() {
     assert.equal(applied, 0); assert.equal(value.status, 'cancelled');
     m.handleTaskEvent({ type: 'done', taskId: 'wave:a' });
     assert.equal(value.tasks[0].status, 'cancelled');
+  });
+  await test('Ruflo failure before worker launch pauses without counting an attempt', async () => {
+    const m = fixture();
+    m.ruflo.updateTask = async () => { throw new Error('MCP disconnected'); };
+    const value = mission('sync-pause', [{ id: 'a', status: 'ready', required: true }]);
+    m.missions.set(value.id, value);
+    await m.executeAndReviewWave(value, value.tasks);
+    assert.equal(value.status, 'needs_input');
+    assert.equal(value.pendingAction.kind, 'ruflo_runtime');
+    assert.equal(value.tasks[0].attempts || 0, 0);
   });
   await test('required dependency failure propagates and prevents final apply', async () => {
     let reviewed = false; const m = fixture({ finalReview: async () => { reviewed = true; return { ok: true }; } });
@@ -225,7 +235,7 @@ function clientFixture() {
     for (let i = 0; i < 20; i++) m.handleTaskEvent({ taskId: 'progress:a', type: 'progress', text: 'step ' + i });
     assert.equal(saves, 0); await delay(180); assert.equal(saves, 1);
     m.handleTaskEvent({ taskId: 'progress:a', type: 'progress', text: 'last' });
-    m.cancel(value.id); const afterCancel = saves;
+    await m.cancel(value.id); const afterCancel = saves;
     await delay(180); assert.equal(saves, afterCancel); assert.equal(value.status, 'cancelled');
   });
   await test('unchanged plans are not rewritten during progress saves', async () => {

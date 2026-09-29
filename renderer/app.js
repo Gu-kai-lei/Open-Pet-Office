@@ -1516,6 +1516,10 @@ function missionFinalHtml(review) {
     + '</div>';
 }
 
+function missionActionText(action) {
+  return ({ ruflo_runtime: 'Ruflo 运行时需要诊断或修复', review_failed: '阶段复核失败，可只重试复核', final_review_failed: '最终复核失败，可只重试复核', uncertain_execution: '部分节点的执行结果不明，需要确认是否重跑', worker_environment: 'Windows 工作者环境无法执行文件操作；修复后可重试失败节点', merge_conflict: '隔离工作区存在合并冲突', baseline_changed: '主项目在任务执行期间发生变化', high_risk: '回写涉及删除、二进制或范围外文件' })[action && action.kind] || '需要检查并处理';
+}
+
 function missionCardHtml(mission) {
   const waves = new Map();
   for (const task of mission.tasks || []) {
@@ -1532,10 +1536,14 @@ function missionCardHtml(mission) {
   if (mission.legacy) actions = '<button class="btn primary" data-mission-clone="' + esc(mission.id) + '">复制为 Ruflo 任务</button>';
   else if (mission.status === 'awaiting_confirmation') actions = '<button class="btn" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button><button class="btn primary" data-mission-confirm="' + esc(mission.id) + '">确认执行</button>';
   else if (mission.status === 'interrupted') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">对账并恢复</button>';
-  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'ruflo_runtime') actions = '<button class="btn primary" data-ruflo-repair="' + esc(mission.id) + '">诊断并修复 Ruflo</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'ruflo_runtime') actions = '<button class="btn" data-ruflo-repair="' + esc(mission.id) + '">诊断并修复 Ruflo</button><button class="btn primary" data-mission-resume="' + esc(mission.id) + '">修复后恢复</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && ['review_failed', 'final_review_failed'].includes(mission.pendingAction.kind)) actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">重试复核</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'uncertain_execution') actions = '<button class="btn" data-mission-resume="' + esc(mission.id) + '">再次对账</button><button class="btn danger" data-mission-replay="' + esc(mission.id) + '">重新执行未完成节点</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'worker_environment') actions = '<button class="btn primary" data-mission-replay="' + esc(mission.id) + '">修复环境后重试失败节点</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'high_risk') actions = '<button class="btn danger" data-mission-apply="' + esc(mission.id) + '">确认高风险回写</button>';
-  else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">我已手动处理</button>';
-  else if (mission.status === 'needs_input' && !(mission.tasks || []).length) actions = '<button class="btn primary" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'merge_conflict') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">在隔离区处理后继续复核</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">已在主项目合并，校验交付</button>';
+  else if (mission.status === 'needs_input') actions = '<button class="btn primary" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>';
   if (!mission.legacy && ['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
   if (!mission.legacy && ['completed', 'partial'].includes(mission.status) && !mission.memoryPublished) actions += '<button class="btn" data-memory-publish="' + esc(mission.id) + '">发布为通用经验</button>';
   const key = 'mission:' + mission.id;
@@ -1547,12 +1555,13 @@ function missionCardHtml(mission) {
   const messageHtml = messages.length ? '<details class="mission-stream"><summary>团队消息 <span>' + messages.length + '</span></summary>' + messages.map(item => '<p><b>' + esc(item.from || 'system') + ' → ' + esc(item.to || 'all') + '</b>' + esc(short(item.summary, 180)) + '</p>').join('') + '</details>' : '';
   const memoryHtml = (mission.memoryHits || []).length ? '<div class="memory-hit">规划前检索到 ' + mission.memoryHits.length + ' 条项目经验</div>' : '';
   const advanced = mission.legacy ? '' : '<details class="ruflo-advanced"><summary>高级详情与诊断</summary><dl><dt>Swarm</dt><dd>' + esc(mission.swarmId || '—') + '</dd><dt>拓扑</dt><dd>' + esc(mission.topology || 'hierarchical') + ' · ' + esc(mission.consensus || 'raft') + '</dd><dt>Namespace</dt><dd>' + esc(mission.memoryNamespace || '—') + '</dd><dt>MCP</dt><dd>' + esc((mission.runtimeHealth && mission.runtimeHealth.state) || 'unknown') + '</dd><dt>Ruflo</dt><dd>' + esc(mission.rufloVersion || '—') + '</dd></dl></details>';
-  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'integrating', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + badge + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(mission.pendingAction.kind) + '</div>' : '') + memoryHtml + taskRows + messageHtml + advanced + (mission.finalReview ? missionFinalHtml(mission.finalReview) : '') + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
+  const artifactHtml = (mission.artifacts || []).length ? '<details class="mission-artifacts" open><summary>交付文件 <span>' + mission.artifacts.length + '</span></summary>' + mission.artifacts.map(item => '<button class="mission-artifact" data-mission-artifact="' + esc(mission.id) + '" data-artifact-path="' + esc(item.path) + '"><span>' + esc(item.path) + '</span><b>打开</b></button>').join('') + '</details>' : '';
+  return '<details class="mission-card" data-mission-id="' + esc(mission.id) + '" data-mission-status="' + esc(mission.status) + '"' + (['running', 'reviewing', 'integrating', 'needs_input'].includes(mission.status) ? ' open' : '') + '><summary><span class="mission-status ' + missionStatusClass(mission.status) + '"></span><div><b>' + badge + esc(short(mission.objective, 120)) + '</b><small>' + esc(mission.projectName || '') + ' · ' + esc(MISSION_STATUS_TEXT[mission.status] || mission.status) + ' · 当前阶段 ' + ((mission.currentWave || 0) + 1) + '</small></div><i>›</i></summary><div class="mission-body">' + supervisorRecord + (mission.error ? '<div class="mission-warning">' + esc(mission.error) + '</div>' : '') + (mission.pendingAction ? '<div class="mission-warning">等待处理：' + esc(missionActionText(mission.pendingAction)) + '</div>' : '') + memoryHtml + taskRows + messageHtml + advanced + (mission.finalReview ? missionFinalHtml(mission.finalReview) : '') + artifactHtml + '<div class="mission-actions"><button class="btn" data-pin-task="' + esc(key) + '">' + (S.ui.pinnedLiveTaskKey === key ? '取消固定' : '固定任务卡') + '</button>' + (mission.supervisorThreadId && !active ? '<button class="btn" data-activity-thread="' + esc(mission.supervisorThreadId) + '">在 Codex 中查看</button>' : '') + actions + '</div></div></details>';
 }
 
 function missionSectionHtml(items = missions) {
   if (!items.length) return '';
-  return '<section class="mission-list"><div class="section-title">Mission<span>' + items.length + '</span></div>' + items.slice(0, 12).map(missionCardHtml).join('') + '</section>';
+  return '<section class="mission-list"><div class="section-title">Mission<span>' + items.length + '</span></div>' + items.slice(0, 12).map(missionCardHtml).join('') + (items.length > 12 ? '<details class="mission-older"><summary>显示另外 ' + (items.length - 12) + ' 项 Mission</summary>' + items.slice(12).map(missionCardHtml).join('') + '</details>' : '') + '</section>';
 }
 
 function progressStageLabel(stage) {
@@ -1797,10 +1806,39 @@ function bindActivity() {
     showMissionPlan(result.mission, result.mission.objective, result.mission.participants || []);
     bubble('supervisor', '新计划已生成，请确认后开工。', 6500);
   }; });
-  panel.querySelectorAll('[data-mission-resume]').forEach(button => { button.onclick = async () => { await window.petOffice.resumeMission(button.dataset.missionResume); }; });
+  panel.querySelectorAll('[data-mission-resume]').forEach(button => { button.onclick = async () => {
+    const result = await window.petOffice.resumeMission(button.dataset.missionResume);
+    if (result && result.code === 'RUFLO_SETUP_REQUIRED') return showRufloSetup(result.setup, () => openActivity());
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '恢复失败', 7000, 'attention');
+    else if (result.mission && result.mission.status === 'awaiting_confirmation') showMissionPlan(result.mission, result.mission.objective, result.mission.participants || []);
+  }; });
+  panel.querySelectorAll('[data-mission-replay]').forEach(button => { button.onclick = async () => {
+    const mission = missions.find(item => item.id === button.dataset.missionReplay);
+    const environmentFailure = mission && mission.pendingAction && mission.pendingAction.kind === 'worker_environment';
+    if (!await confirmAction(environmentFailure ? '重试环境故障节点' : '重新执行未完成节点', environmentFailure
+      ? '请先确认 Windows 沙箱或工作者运行环境已恢复。失败节点会在新的隔离工作区重试；已完成的节点不会重复执行。'
+      : '这些节点在上次中断时可能已产生结果。重新执行会在隔离工作区启动新尝试；请先检查已有产物和 Ruflo 状态。', '重新执行')) return;
+    const result = await window.petOffice.resumeMission(button.dataset.missionReplay, true);
+    if (result && result.code === 'RUFLO_SETUP_REQUIRED') return showRufloSetup(result.setup, () => openActivity());
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '重新执行失败', 7000, 'attention');
+  }; });
   panel.querySelectorAll('[data-mission-cancel]').forEach(button => { button.onclick = async () => { await window.petOffice.cancelMission(button.dataset.missionCancel); }; });
-  panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionApply, 'apply'); }; });
-  panel.querySelectorAll('[data-mission-resolved]').forEach(button => { button.onclick = async () => { await window.petOffice.resolveMission(button.dataset.missionResolved, 'mark-resolved'); }; });
+  panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => {
+    const mission = missions.find(item => item.id === button.dataset.missionApply);
+    const risk = mission && mission.pendingAction || {};
+    const paths = [...(risk.deletes || []), ...(risk.binaries || []), ...(risk.outOfScope || [])].map(item => item.path).filter(Boolean);
+    if (!await confirmAction('确认高风险回写', '将写入主项目。需额外确认的文件：\n' + paths.slice(0, 20).join('\n') + (paths.length > 20 ? '\n等 ' + paths.length + ' 项' : ''), '确认回写')) return;
+    const result = await window.petOffice.resolveMission(button.dataset.missionApply, 'apply');
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '回写失败', 7000, 'attention');
+  }; });
+  panel.querySelectorAll('[data-mission-artifact]').forEach(button => { button.onclick = async () => {
+    const result = await window.petOffice.openMissionArtifact(button.dataset.missionArtifact, button.dataset.artifactPath);
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '文件无法打开', 6500, 'attention');
+  }; });
+  panel.querySelectorAll('[data-mission-resolved]').forEach(button => { button.onclick = async () => {
+    const result = await window.petOffice.resolveMission(button.dataset.missionResolved, 'mark-resolved');
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '校验失败', 7000, 'attention');
+  }; });
   panel.querySelectorAll('[data-mission-clone]').forEach(button => {
     button.onclick = async () => {
       const result = await window.petOffice.cloneLegacyMission(button.dataset.missionClone);
@@ -3308,7 +3346,7 @@ function showRufloSetup(setup, onReady) {
   composer.getAnimations().forEach(animation => animation.cancel());
   composer.className = 'ui pet-composer mission-preview ruflo-setup ready';
   composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>启用 Ruflo 团队协作</b><small>首次分工需要安装固定版运行时</small></span><button class="inline-close" id="c-close">×</button></div>'
-    + '<div class="ruflo-setup-copy"><strong>Ruflo 负责任务、角色、依赖和记忆；Codex Agent 继续执行实际文件工作。</strong><p>运行时安装在 ~/.pet-office/ruflo，不会在项目中生成 .claude 或 .claude-flow。</p></div>'
+    + '<div class="ruflo-setup-copy"><strong>Ruflo 管理团队、任务状态和记忆；Pet Office 调度依赖，Codex Agent 执行实际文件工作。</strong><p>运行时安装在 ~/.pet-office/ruflo，不会在项目中生成 .claude 或 .claude-flow。</p></div>'
     + '<div class="ruflo-checks">' + rows + '</div><div class="approval-note">安装会通过 npm 下载固定的 ruflo@3.43.0，并把下游 CLI 同时锁定为 3.43.0。安装和修复都需要你明确确认。</div>'
     + '<div class="composer-foot"><button class="btn" id="ruflo-later">稍后</button><button class="btn primary" id="ruflo-install"' + (prerequisites ? '' : ' disabled') + '>安装并检查</button></div></div>';
   animateComposerRect(composerBox(), composerLayout(boss, true, Math.min(Math.round(innerHeight * .72), measureComposerHeight(610))), 220);
@@ -3351,7 +3389,7 @@ function showMissionPlan(mission, originalText, participants) {
     ? '<details class="plan-memory"><summary>找到 ' + mission.memoryHits.length + ' 条项目经验</summary>' + mission.memoryHits.map(hit => '<p><b>' + esc(hit.key || '经验') + '</b>' + esc(short(typeof hit.value === 'string' ? hit.value : JSON.stringify(hit.value), 150)) + '</p>').join('') + '</details>'
     : '<div class="plan-memory empty">本项目暂无可复用经验</div>';
   const advanced = '<details class="ruflo-advanced"><summary>Ruflo 高级详情</summary><dl><dt>Swarm</dt><dd>' + esc(mission.swarmId || '—') + '</dd><dt>拓扑</dt><dd>' + esc(mission.topology || 'hierarchical') + ' · specialized · raft</dd><dt>记忆</dt><dd>' + esc(mission.memoryNamespace || '—') + '</dd><dt>版本</dt><dd>' + esc(mission.rufloVersion || '3.43.0') + '</dd></dl></details>';
-  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>Ruflo 团队计划</b><small>确认后才会创建隔离工作区并启动 Codex Agent</small></span><button class="inline-close" id="c-close" title="收起">×</button></div><div class="mission-plan-scroll">' + memoryHtml + waveHtml + advanced + '</div><div class="approval-note">安全范围：每个 Agent 只写自己的隔离工作区；依赖波次由 Ruflo 跟踪，主管复核后才安全回写。冲突、删除、二进制和范围外变更会暂停等待你。</div><div class="composer-foot"><button class="btn" id="c-back">返回修改</button><button class="btn" id="c-replan">重新规划</button><button class="btn primary" id="c-confirm-mission">确认并开工</button></div></div>';
+  composer.innerHTML = '<div class="composer-stack mission-plan-stack"><div class="inline-heading"><span><b>Ruflo 团队计划</b><small>确认后才会创建隔离工作区并启动 Codex Agent</small></span><button class="inline-close" id="c-close" title="收起">×</button></div><div class="mission-plan-scroll">' + memoryHtml + waveHtml + advanced + '</div><div class="approval-note">安全范围：每个 Agent 只写自己的隔离工作区；Pet Office 根据计划依赖调度任务，并同步 Ruflo 状态。主管复核后才安全回写。冲突、删除、二进制和范围外变更会暂停等待你。</div><div class="composer-foot"><button class="btn" id="c-back">返回修改</button><button class="btn" id="c-replan">重新规划</button><button class="btn primary" id="c-confirm-mission">确认并开工</button></div></div>';
   const height = Math.min(Math.round(innerHeight * .72), measureComposerHeight(width));
   animateComposerRect(current, composerLayout(boss, true, height), 220);
   composer.querySelector('#c-close').onclick = () => closeComposer();

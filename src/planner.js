@@ -285,6 +285,7 @@ function planMission({ projectDir, missionDir, objective, participants, memoryHi
     '- 最多为每位工作者安排一个同时执行的节点；任务可按依赖分波次。',
     '- 写入任务要给出尽量精确的 fileScopes；只读分析使用 read，核验使用 verify。',
     '- dependsOn 只能引用本计划中其他任务 id，禁止循环依赖。',
+    '- 若目标依赖外部课件、网页或附件，先安排只读来源核验节点；写入内容的节点必须依赖核验结论。来源不可访问时应停止原件解析并报告阻塞，不可按标题虚构原文。',
     '- 至少一个 required=true 的终态交付任务。',
   ].join('\n\n');
   return runSupervisorStructured({ projectDir, missionDir, kind: 'plan', prompt, schema: PLAN_SCHEMA, model: supervisorModel, threadId, signal });
@@ -312,8 +313,9 @@ function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, t
 function finalReview({ projectDir, missionDir, mission, supervisorModel, threadId, signal }) {
   const tasks = (mission.tasks || []).map(task => ({ id: task.id, title: task.title, status: task.status, report: task.report || null, review: task.review || null, changes: task.changeSet ? task.changeSet.changes : [] }));
   const prompt = [
-    '# 任务', '对整个 Mission 做最终复核。不要拼接工作者原文，要判断目标是否实现、验证是否可信、剩余风险是什么。',
+    '# 任务', '对整个 Mission 做独立的最终复核。当前只读工作目录是隔离集成区；必须实际读取交付文件，核对文件内容、要求和工作者报告，不能只复述报告。',
     '# Mission 目标', mission.objective, '# 节点结果', JSON.stringify(tasks, null, 2),
+    '# 核验', '对重要计算、链接和测试结论做可复查的抽样；无法访问的原始来源必须明确标为未验证，不能把基于标题的重建当作原文解析。已确认的错误仍在文件中时，不可给出 pass。',
     '# 判定', '全部必需交付可用为 pass；存在可用成果但有非致命缺失为 partial；没有可用成果或关键验证失败为 fail。',
     '# 安全边界', '这是只读复核。禁止调用写入工具、禁止复制产物、禁止修改主项目；安全回写只能由 Pet Office 在复核结束后执行。',
   ].join('\n\n');
