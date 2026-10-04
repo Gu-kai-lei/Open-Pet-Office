@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('petOffice', {
   regenerateMission: id => ipcRenderer.invoke('mission:regenerate', id),
   cancelMission: id => ipcRenderer.invoke('mission:cancel', id),
   cancelMissionTask: (missionId, taskId) => ipcRenderer.invoke('mission:cancelTask', { missionId, taskId }),
-  resumeMission: (id, allowReplay = false) => ipcRenderer.invoke('mission:resume', { id, allowReplay }),
+  resumeMission: (id, allowReplay = false, sandboxFallback = false) => ipcRenderer.invoke('mission:resume', { id, allowReplay, sandboxFallback }),
   openMissionArtifact: (missionId, relativePath) => ipcRenderer.invoke('mission:openArtifact', { missionId, relativePath }),
   listMissions: () => ipcRenderer.invoke('mission:list'),
   getMission: id => ipcRenderer.invoke('mission:get', id),

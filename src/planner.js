@@ -151,7 +151,7 @@ function parseStructuredOutput(raw) {
   throw new Error('输出中没有可解析的 JSON 对象');
 }
 
-function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, signal, timeoutMs = 300000, plain = false }) {
+function runStructured({ projectDir, missionDir, kind, prompt, schema, model, threadId, signal, timeoutMs = 300000, plain = false, workerSandbox = 'elevated' }) {
   return new Promise(resolve => {
     if (signal && signal.aborted) return resolve({ ok: false, cancelled: true, error: 'Mission 已停止', threadId: threadId || null });
     fs.mkdirSync(missionDir, { recursive: true });
@@ -163,6 +163,7 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     if (!plain) fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
     const instruction = plain ? prompt : prompt + '\n\nReturn only the JSON object required by the output schema.';
     const args = ['/d', '/s', '/c', 'codex', 'exec'];
+    if (workerSandbox === 'unelevated') args.push('-c', 'windows.sandbox="unelevated"');
     if (threadId) {
       // `codex exec resume` does not expose --sandbox, so force the equivalent
       // config value. Without it a resumed supervisor inherits the user's
@@ -307,7 +308,7 @@ function reviewWave({ projectDir, missionDir, mission, tasks, supervisorModel, t
     '- 这是只读复核：禁止调用写入工具、禁止修改主项目，只能根据提供的报告和变更清单作出决定。',
     '- nextBrief、nextAssignee、nextModel 不适用时必须返回 null。',
   ].join('\n\n');
-  return runSupervisorStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId, signal });
+  return runSupervisorStructured({ projectDir, missionDir, kind: 'wave-review-' + mission.currentWave, prompt, schema: REVIEW_SCHEMA, model: supervisorModel, threadId, signal, workerSandbox: mission.workerSandbox });
 }
 
 function finalReview({ projectDir, missionDir, mission, supervisorModel, threadId, signal }) {
@@ -319,7 +320,7 @@ function finalReview({ projectDir, missionDir, mission, supervisorModel, threadI
     '# 判定', '全部必需交付可用为 pass；存在可用成果但有非致命缺失为 partial；没有可用成果或关键验证失败为 fail。',
     '# 安全边界', '这是只读复核。禁止调用写入工具、禁止复制产物、禁止修改主项目；安全回写只能由 Pet Office 在复核结束后执行。',
   ].join('\n\n');
-  return runSupervisorStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal });
+  return runSupervisorStructured({ projectDir, missionDir, kind: 'final-review', prompt, schema: FINAL_SCHEMA, model: supervisorModel, threadId, signal, workerSandbox: mission.workerSandbox });
 }
 
 function presentFinal({ projectDir, missionDir, threadId, review, supervisorModel, signal }) {

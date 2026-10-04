@@ -60,6 +60,9 @@ function run(t) {
     }
     const prompt = t.prompt || ('Read ' + JSON.stringify(briefPath) + ' and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.');
     const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs()];
+    // Windows restricted-token mode is an explicit per-Mission recovery choice.
+    // Keep workspace-write and the user's global Codex configuration unchanged.
+    if (t.workerSandbox === 'unelevated') args.push('-c', 'windows.sandbox="unelevated"');
     if (t.rufloMcp && t.rufloMcp.command) {
       // Per-process MCP config keeps Ruflo out of the user's global Codex
       // config. The wrapper changes cwd to Pet Office's private runtime before

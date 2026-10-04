@@ -1517,7 +1517,7 @@ function missionFinalHtml(review) {
 }
 
 function missionActionText(action) {
-  return ({ ruflo_runtime: 'Ruflo 运行时需要诊断或修复', review_failed: '阶段复核失败，可只重试复核', final_review_failed: '最终复核失败，可只重试复核', uncertain_execution: '部分节点的执行结果不明，需要确认是否重跑', worker_environment: 'Windows 工作者环境无法执行文件操作；修复后可重试失败节点', merge_conflict: '隔离工作区存在合并冲突', baseline_changed: '主项目在任务执行期间发生变化', high_risk: '回写涉及删除、二进制或范围外文件' })[action && action.kind] || '需要检查并处理';
+  return ({ ruflo_runtime: 'Ruflo 运行时需要诊断或修复', review_failed: '阶段复核失败，可只重试复核', final_review_failed: '最终复核失败，可只重试复核', uncertain_execution: '部分节点的执行结果不明，需要确认是否重跑', worker_environment: 'Windows 工作者环境无法执行文件操作；可在修复后重试，或明确选择兼容沙箱', review_environment: '独立复核无法读取文件；修复环境后重试复核，或明确选择兼容沙箱', partial_result: '最终复核仅部分达成；检查风险后决定是否回写', integration_apply_failed: '主项目回写失败；已尝试撤回本次写入，可检查后恢复', integration_recovery_conflict: '主项目文件在中断后发生变化；请检查回写记录和备份', merge_conflict: '隔离工作区存在同路径冲突；不会自动合并。请保留产物，取消后重新发起任务', baseline_changed: '主项目在任务执行期间发生变化', high_risk: '回写涉及删除、二进制或范围外文件' })[action && action.kind] || '需要检查并处理';
 }
 
 function missionCardHtml(mission) {
@@ -1539,9 +1539,13 @@ function missionCardHtml(mission) {
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'ruflo_runtime') actions = '<button class="btn" data-ruflo-repair="' + esc(mission.id) + '">诊断并修复 Ruflo</button><button class="btn primary" data-mission-resume="' + esc(mission.id) + '">修复后恢复</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction && ['review_failed', 'final_review_failed'].includes(mission.pendingAction.kind)) actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">重试复核</button>';
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'uncertain_execution') actions = '<button class="btn" data-mission-resume="' + esc(mission.id) + '">再次对账</button><button class="btn danger" data-mission-replay="' + esc(mission.id) + '">重新执行未完成节点</button>';
-  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'worker_environment') actions = '<button class="btn primary" data-mission-replay="' + esc(mission.id) + '">修复环境后重试失败节点</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'worker_environment') actions = '<button class="btn" data-mission-replay="' + esc(mission.id) + '">修复环境后重试</button><button class="btn primary" data-mission-sandbox-fallback="' + esc(mission.id) + '">使用兼容沙箱重试</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'review_environment') actions = '<button class="btn" data-mission-resume="' + esc(mission.id) + '">修复后重试复核</button><button class="btn primary" data-mission-sandbox-fallback="' + esc(mission.id) + '">兼容沙箱重试复核</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'partial_result') actions = '<button class="btn danger" data-mission-apply-partial="' + esc(mission.id) + '">确认部分结果回写</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'integration_apply_failed') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">检查并重新回写</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'integration_recovery_conflict') actions = '';
   else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'high_risk') actions = '<button class="btn danger" data-mission-apply="' + esc(mission.id) + '">确认高风险回写</button>';
-  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'merge_conflict') actions = '<button class="btn primary" data-mission-resume="' + esc(mission.id) + '">在隔离区处理后继续复核</button>';
+  else if (mission.status === 'needs_input' && mission.pendingAction && mission.pendingAction.kind === 'merge_conflict') actions = '';
   else if (mission.status === 'needs_input' && mission.pendingAction) actions = '<button class="btn" data-mission-resolved="' + esc(mission.id) + '">已在主项目合并，校验交付</button>';
   else if (mission.status === 'needs_input') actions = '<button class="btn primary" data-mission-regenerate="' + esc(mission.id) + '">重新规划</button>';
   if (!mission.legacy && ['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted'].includes(mission.status)) actions += '<button class="btn danger subtle" data-mission-cancel="' + esc(mission.id) + '">取消 Mission</button>';
@@ -1821,6 +1825,20 @@ function bindActivity() {
     const result = await window.petOffice.resumeMission(button.dataset.missionReplay, true);
     if (result && result.code === 'RUFLO_SETUP_REQUIRED') return showRufloSetup(result.setup, () => openActivity());
     if (!result || !result.ok) bubble('supervisor', (result && result.error) || '重新执行失败', 7000, 'attention');
+  }; });
+  panel.querySelectorAll('[data-mission-sandbox-fallback]').forEach(button => { button.onclick = async () => {
+    const mission = missions.find(item => item.id === button.dataset.missionSandboxFallback);
+    const replayWorkers = mission && mission.pendingAction && mission.pendingAction.kind === 'worker_environment';
+    if (!await confirmAction('使用 Windows 兼容沙箱', 'Codex 原生 Windows 沙箱初始化失败。将仅对这个 Mission 的 Codex Agent 改用官方受限令牌兼容模式；仍保持 workspace-write 文件范围和现有敏感操作确认，但隔离强度低于原生沙箱。' + (replayWorkers ? '失败节点会在新的隔离工作区重试。' : '只重试独立复核，不重跑已接受的工作者。'), '确认并重试')) return;
+    const result = await window.petOffice.resumeMission(button.dataset.missionSandboxFallback, replayWorkers, true);
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '兼容沙箱重试失败', 7000, 'attention');
+  }; });
+  panel.querySelectorAll('[data-mission-apply-partial]').forEach(button => { button.onclick = async () => {
+    const mission = missions.find(item => item.id === button.dataset.missionApplyPartial);
+    const risks = mission && mission.finalReview && mission.finalReview.risks || [];
+    if (!await confirmAction('确认部分结果回写', '最终复核仅判定部分达成。风险与缺失：\n' + (risks.length ? risks.slice(0, 5).join('\n') : '未提供详细风险说明') + '\n确认后才会将已复核的文件写入主项目。', '确认回写')) return;
+    const result = await window.petOffice.resolveMission(button.dataset.missionApplyPartial, 'apply-partial');
+    if (!result || !result.ok) bubble('supervisor', (result && result.error) || '部分结果回写未完成', 7000, 'attention');
   }; });
   panel.querySelectorAll('[data-mission-cancel]').forEach(button => { button.onclick = async () => { await window.petOffice.cancelMission(button.dataset.missionCancel); }; });
   panel.querySelectorAll('[data-mission-apply]').forEach(button => { button.onclick = async () => {

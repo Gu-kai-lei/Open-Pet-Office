@@ -89,6 +89,13 @@ async function main() {
   if (draft.mission.tasks.length !== 2 || !assignees.has('w1') || !assignees.has('w2')) {
     throw new Error('planner did not create the required two-agent plan: ' + JSON.stringify(draft.mission.tasks));
   }
+  // Explicit opt-in for testing the documented Windows restricted-token
+  // fallback when the native sandbox cannot initialize on this host.
+  if (process.env.PET_OFFICE_E2E_WORKER_SANDBOX === 'unelevated') {
+    const live = manager.missions.get(draft.mission.id);
+    live.workerSandbox = 'unelevated';
+    manager.store.save(live);
+  }
   const confirmed = await manager.confirm(draft.mission.id);
   if (!confirmed.ok) throw new Error('confirmation failed: ' + confirmed.error);
   const deadline = Date.now() + 12 * 60 * 1000;

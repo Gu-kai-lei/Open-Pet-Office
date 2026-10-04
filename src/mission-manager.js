@@ -165,17 +165,22 @@ function validatePlan(rawPlan, participants) {
 
 function effectiveReviewDecision(task, proposed) {
   const eligible = task.status === 'succeeded' && task.report && task.report.outcome !== 'failed';
+  const changes = task.changeSet && Array.isArray(task.changeSet.changes) ? task.changeSet.changes : [];
+  // The local collector hashes actual workspace files. For write tasks those
+  // bytes, plus an explicit supervisor decision, are stronger evidence than
+  // optional prose in a model-generated validation array.
+  const hasOutput = task.mode !== 'write' || changes.some(change => change.kind !== 'deleted' && change.hash);
+  const validated = task.mode === 'write' ? hasOutput : eligible && Array.isArray(task.report.validation) && task.report.validation.some(item =>
+    item && item.status === 'passed' && String(item.command || '').trim() && item.command !== '未记录命令');
   let decision = proposed || null;
   if (!decision) {
-    decision = eligible
-      ? { decision: 'accept', reason: '主管未返回该节点的明确决策；本地报告门槛已通过。' }
-      : { decision: task.attempts < 2 ? 'retry' : 'fail', reason: '主管未返回该节点的明确决策，且工作者报告未通过本地成功门槛。' };
+    decision = { decision: task.attempts < 2 ? 'retry' : 'fail', reason: '主管未返回该节点的明确复核决定，不能自动接受。' };
   }
-  if (decision.decision === 'accept' && !eligible) {
+  if (decision.decision === 'accept' && (!eligible || !validated || !hasOutput)) {
     decision = {
       ...decision,
       decision: task.attempts < 2 ? 'retry' : 'fail',
-      reason: '本地安全门槛拒绝接受失败或缺失的工作者报告。' + (decision.reason ? ' ' + decision.reason : ''),
+      reason: '本地交付门槛拒绝接受失败报告、缺少可核验文件变更的写入任务或缺少验证记录的只读任务。' + (decision.reason ? ' ' + decision.reason : ''),
     };
   }
   return decision;
@@ -298,6 +303,7 @@ class MissionManager {
       topology: mission.topology || null, strategy: mission.strategy || null, consensus: mission.consensus || null,
       memoryNamespace: mission.memoryNamespace || null, syncCursor: mission.syncCursor || 0,
       runtimeHealth: mission.runtimeHealth || null, memoryHits: mission.memoryHits || [],
+      workerSandbox: mission.workerSandbox || 'elevated',
       supervisorThreadId: mission.supervisorThreadId || null, status: mission.status, currentWave: mission.currentWave || 0,
       participants: mission.participants, plan: mission.plan ? { objective: mission.plan.objective, assumptions: mission.plan.assumptions } : null,
       tasks: (mission.tasks || []).map(task => ({
@@ -832,6 +838,7 @@ class MissionManager {
       id: mission.id + ':' + task.id, missionId: mission.id, petId: task.assigneePetId, petName: task.assigneeName,
       model: task.model, brief, projectDir: workspace, briefPath, resultPath, outputSchemaPath: schemaPath,
       skipLegacyDirs: true, threadSource: 'pet-office-worker',
+      workerSandbox: mission.workerSandbox || 'elevated',
       rufloMcp: this.ruflo.workerMcpConfig(mission.projectId, mission.id, task.rufloTaskId),
       prompt: 'Complete the assigned work below only inside this isolated workspace. Return the final structured report required by the output schema.\n\n' + brief,
     });
@@ -932,6 +939,13 @@ class MissionManager {
     if (!review.ok) { mission.error = '主管最终复核失败: ' + review.error; mission.pendingAction = { kind: 'final_review_failed' }; this.transition(mission, 'needs_input', 'mission.final_review_failed', { error: review.error }); return; }
     mission.finalReview = review.value;
     this.store.review(mission, 'final', review.value);
+    const reviewEvidence = [review.value.summary, review.value.validationSummary, ...(review.value.risks || [])].join(' ');
+    if (/apply deny-read ACLs|helper_unknown_error.*deny-read|windows sandbox.*(?:ACL|初始化)/i.test(reviewEvidence)) {
+      mission.error = '独立复核无法读取隔离区文件：Windows 沙箱初始化失败。已停止回写主项目。';
+      mission.pendingAction = { kind: 'review_environment' };
+      this.transition(mission, 'needs_input', 'mission.review_environment_failed', { error: mission.error });
+      return;
+    }
     // The structured final review is machine-readable by design, but it also
     // becomes the supervisor thread's last message. Append a plain-language
     // summary turn so opening the finished Mission in Codex shows a readable
@@ -950,13 +964,25 @@ class MissionManager {
     mission.finalChangeSet = this.workspace.finalChangeSet(mission, artifactDir);
     const preflight = this.workspace.preflightMain(mission, mission.finalChangeSet);
     if (!preflight.ok) { mission.pendingAction = { kind: preflight.kind, conflicts: preflight.conflicts }; this.transition(mission, 'needs_input', 'mission.integration_blocked', mission.pendingAction); return; }
+    if (review.value.verdict === 'partial') {
+      mission.pendingAction = { kind: 'partial_result' };
+      this.transition(mission, 'needs_input', 'mission.partial_confirmation', { summary: review.value.summary });
+      return;
+    }
     if (preflight.highRisk) { mission.pendingAction = { kind: 'high_risk', deletes: preflight.deletes, binaries: preflight.binaries, outOfScope: preflight.outOfScope }; this.transition(mission, 'needs_input', 'mission.high_risk_confirmation', mission.pendingAction); return; }
     this.applyFinal(mission);
   }
 
   applyFinal(mission) {
     if (!this.current(mission, this.operation(mission))) return;
-    const result = this.workspace.applyFinal(mission, mission.finalChangeSet);
+    let result;
+    try { result = this.workspace.applyFinal(mission, mission.finalChangeSet); }
+    catch (error) {
+      mission.error = '主项目回写失败：' + error.message;
+      mission.pendingAction = { kind: 'integration_apply_failed' };
+      this.transition(mission, 'needs_input', 'mission.integration_apply_failed', { error: mission.error });
+      return;
+    }
     mission.pendingAction = null; mission.finishedAt = Date.now(); mission.applyBackup = result.backup;
     const status = mission.finalReview && mission.finalReview.verdict === 'partial' ? 'partial' : 'completed';
     this.transition(mission, status, 'mission.completed', { verdict: mission.finalReview && mission.finalReview.verdict });
@@ -982,10 +1008,18 @@ class MissionManager {
   resolveConflict(id, action) {
     const mission = this.missions.get(id);
     if (!mission || mission.status !== 'needs_input' || !mission.pendingAction) return { ok: false, error: '没有等待处理的集成问题。' };
+    if (mission.pendingAction.kind === 'partial_result' && action === 'apply-partial') {
+      const preflight = this.workspace.preflightMain(mission, mission.finalChangeSet);
+      if (!preflight.ok) { mission.pendingAction = { kind: preflight.kind, conflicts: preflight.conflicts }; this.transition(mission, 'needs_input', 'mission.integration_blocked', mission.pendingAction); return { ok: false, error: '主项目在确认期间发生变化，已停止回写。', mission: this.publicMission(mission) }; }
+      if (preflight.highRisk) { mission.pendingAction = { kind: 'high_risk', deletes: preflight.deletes, binaries: preflight.binaries, outOfScope: preflight.outOfScope }; this.transition(mission, 'needs_input', 'mission.high_risk_confirmation', mission.pendingAction); return { ok: false, error: '部分交付还包含高风险文件，请再确认具体文件。', mission: this.publicMission(mission) }; }
+      this.applyFinal(mission);
+      return { ok: mission.status !== 'needs_input', error: mission.status === 'needs_input' ? mission.error : undefined, mission: this.publicMission(mission) };
+    }
     if (mission.pendingAction.kind === 'high_risk' && action === 'apply') {
       const preflight = this.workspace.preflightMain(mission, mission.finalChangeSet);
       if (!preflight.ok) { mission.pendingAction = { kind: preflight.kind, conflicts: preflight.conflicts }; this.transition(mission, 'needs_input', 'mission.integration_blocked', mission.pendingAction); return { ok: false, error: '主项目在确认期间发生变化，已停止回写。', mission: this.publicMission(mission) }; }
-      this.applyFinal(mission); return { ok: true, mission: this.publicMission(mission) };
+      this.applyFinal(mission);
+      return { ok: mission.status !== 'needs_input', error: mission.status === 'needs_input' ? mission.error : undefined, mission: this.publicMission(mission) };
     }
     if (action === 'mark-resolved') {
       if (!mission.finalChangeSet) return { ok: false, error: '合并尚未完成，请先在隔离区处理冲突并继续复核。' };
@@ -1039,11 +1073,32 @@ class MissionManager {
     return { ok: true, mission: this.publicMission(mission) };
   }
 
-  async resume(id, allowReplay = false) {
+  async resume(id, allowReplay = false, sandboxFallback = false) {
     const mission = this.missions.get(id);
-    const recoverable = mission && (mission.status === 'interrupted' || (mission.status === 'needs_input' && mission.pendingAction && ['ruflo_runtime', 'review_failed', 'final_review_failed', 'uncertain_execution', 'worker_environment', 'merge_conflict'].includes(mission.pendingAction.kind)));
+    if (mission && mission.pendingAction && mission.pendingAction.kind === 'merge_conflict')
+      return { ok: false, error: '同一波次的文件冲突不能自动合并或跳过。请保留隔离区产物，取消此 Mission 后根据冲突文件重新发起任务。', mission: this.publicMission(mission) };
+    const recoverable = mission && (mission.status === 'interrupted' || (mission.status === 'needs_input' && mission.pendingAction && ['ruflo_runtime', 'review_failed', 'final_review_failed', 'uncertain_execution', 'worker_environment', 'review_environment', 'merge_conflict', 'integration_apply_failed'].includes(mission.pendingAction.kind)));
     if (!recoverable) return { ok: false, error: 'Mission 不在可恢复状态。' };
     if (mission.legacy) return { ok: false, code: 'LEGACY_READ_ONLY', error: '旧版 Mission 仅供查看，请使用“复制为 Ruflo 任务”。' };
+    if (sandboxFallback) {
+      if (!mission.pendingAction || !['worker_environment', 'review_environment'].includes(mission.pendingAction.kind) ||
+          (mission.pendingAction.kind === 'worker_environment' && !allowReplay))
+        return { ok: false, error: '兼容沙箱仅可用于明确确认后的 Windows 工作者环境故障重试。' };
+      mission.workerSandbox = 'unelevated';
+      this.store.event(mission, 'worker.sandbox_fallback_selected', { mode: 'unelevated' });
+      this.store.save(mission);
+    }
+    if (mission.runtimeDir) {
+      try {
+        const recovery = this.workspace.recoverInterruptedApply(mission);
+        if (recovery.recovered) this.store.event(mission, 'mission.integration_rolled_back', { reason: 'interrupted_apply' });
+      } catch (error) {
+        mission.error = '主项目回写状态不确定：' + error.message;
+        mission.pendingAction = { kind: 'integration_recovery_conflict' };
+        this.transition(mission, 'needs_input', 'mission.integration_recovery_conflict', { error: mission.error });
+        return { ok: false, error: mission.error, mission: this.publicMission(mission) };
+      }
+    }
     if (mission.pendingAction && mission.pendingAction.kind === 'worker_environment' && !allowReplay)
       return { ok: false, error: '工作者环境尚未确认修复。请检查任务错误，再明确选择重新执行失败节点。', mission: this.publicMission(mission) };
     const environmentReplayIds = mission.pendingAction && mission.pendingAction.kind === 'worker_environment'

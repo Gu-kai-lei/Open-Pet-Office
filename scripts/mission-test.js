@@ -36,7 +36,13 @@ assert.deepEqual(normalizeWorkerReport({
 }, {}).outcome, 'success');
 assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, report: { outcome: 'failed' } }, { decision: 'accept', reason: '模型误判' }).decision, 'retry');
 assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 2, report: { outcome: 'failed' } }, { decision: 'accept', reason: '模型误判' }).decision, 'fail');
-assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, report: { outcome: 'success' } }, null).decision, 'accept');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, report: { outcome: 'success' } }, null).decision, 'retry', 'a missing supervisor decision must never auto-accept');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'write', changeSet: { changes: [] }, report: { outcome: 'success', validation: [{ command: 'check', status: 'passed', summary: 'ok' }] } }, { decision: 'accept' }).decision, 'retry', 'a write task without actual output cannot pass');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'write', changeSet: { changes: [{ path: 'a.txt', kind: 'added', hash: 'sha256' }] }, report: { outcome: 'success', validation: [] } }, { decision: 'accept' }).decision, 'accept', 'actual hashed output and explicit review can pass despite missing model prose');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'write', changeSet: { changes: [{ path: 'a.txt', kind: 'added' }] }, report: { outcome: 'success', validation: [] } }, { decision: 'accept' }).decision, 'retry', 'unhashed output is not evidence');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'read', changeSet: { changes: [] }, report: { outcome: 'success', validation: [] } }, { decision: 'accept' }).decision, 'retry', 'read-only tasks require an explicit verification record');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'read', changeSet: { changes: [] }, report: { outcome: 'success', validation: [{ command: 'Get-Content source.txt', status: 'passed', summary: '' }] } }, { decision: 'accept' }).decision, 'accept');
+assert.equal(effectiveReviewDecision({ status: 'succeeded', attempts: 1, mode: 'read', changeSet: { changes: [] }, report: { outcome: 'success', validation: [{ command: '未记录命令', status: 'passed', summary: '' }] } }, { decision: 'accept' }).decision, 'retry', 'placeholder validation is not evidence');
 
 function rawPlan() {
   return {
@@ -122,6 +128,36 @@ const binarySet = { filesDir: path.join(root, 'binary-files'), changes: [{ path:
 fs.mkdirSync(binarySet.filesDir, { recursive: true });
 fs.writeFileSync(path.join(binarySet.filesDir, 'image.bin'), Buffer.from([1, 0, 2, 3]));
 assert.equal(workspace.preflightMain(binaryProbe, binarySet).highRisk, true, 'one binary file needs explicit approval');
+const rollbackProject = path.join(root, 'rollback-project');
+fs.mkdirSync(rollbackProject);
+fs.writeFileSync(path.join(rollbackProject, 'original.txt'), 'before');
+const rollbackMission = { id: 'rollback-probe', projectPath: rollbackProject, runtimeDir: path.join(runtime, 'rollback-probe') };
+fs.mkdirSync(rollbackMission.runtimeDir, { recursive: true });
+const rollbackFiles = path.join(root, 'rollback-files');
+fs.mkdirSync(rollbackFiles);
+fs.writeFileSync(path.join(rollbackFiles, 'original.txt'), 'after');
+fs.writeFileSync(path.join(rollbackFiles, 'new.txt'), 'new');
+const crypto = require('crypto');
+const digest = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const rollbackSet = { filesDir: rollbackFiles, changes: [
+  { path: 'original.txt', kind: 'modified', hash: digest(path.join(rollbackFiles, 'original.txt')) },
+  { path: 'new.txt', kind: 'added', hash: digest(path.join(rollbackFiles, 'new.txt')) },
+] };
+const originalApply = workspace.applyChangeSet.bind(workspace);
+workspace.applyChangeSet = (target, changes) => { originalApply(target, { ...changes, changes: changes.changes.slice(0, 1) }); throw new Error('injected write failure'); };
+assert.throws(() => workspace.applyFinal(rollbackMission, rollbackSet), /injected write failure/);
+workspace.applyChangeSet = originalApply;
+assert.equal(fs.readFileSync(path.join(rollbackProject, 'original.txt'), 'utf8'), 'before', 'partial write must roll back');
+assert(!fs.existsSync(path.join(rollbackProject, 'new.txt')));
+assert(!fs.existsSync(path.join(rollbackMission.runtimeDir, 'apply-pending.json')));
+const crashBackup = path.join(rollbackMission.runtimeDir, 'backup-before-apply-crash');
+fs.mkdirSync(crashBackup);
+fs.copyFileSync(path.join(rollbackProject, 'original.txt'), path.join(crashBackup, 'original.txt'));
+const originalHash = digest(path.join(rollbackProject, 'original.txt'));
+fs.writeFileSync(path.join(rollbackProject, 'original.txt'), 'after');
+fs.writeFileSync(path.join(rollbackMission.runtimeDir, 'apply-pending.json'), JSON.stringify({ projectPath: rollbackProject, backup: crashBackup, entries: [{ path: 'original.txt', originalHash, targetHash: digest(path.join(rollbackProject, 'original.txt')) }] }));
+assert.equal(workspace.recoverInterruptedApply(rollbackMission).recovered, true);
+assert.equal(fs.readFileSync(path.join(rollbackProject, 'original.txt'), 'utf8'), 'before', 'restart recovery must restore baseline');
 
 const gitProject = path.join(root, 'git-project');
 fs.mkdirSync(gitProject, { recursive: true });
@@ -166,7 +202,7 @@ const dispatcher = {
       manager.handleTaskEvent({ type: 'started', taskId: task.id });
       const name = task.id.endsWith(':analysis') ? 'a.txt' : 'b.txt';
       fs.writeFileSync(path.join(task.projectDir, name), name + '\n');
-      fs.writeFileSync(task.resultPath, JSON.stringify({ outcome: 'success', summary: name + ' 完成', changedFiles: [name], artifacts: [], validation: [], messages: [], blockers: [] }));
+      fs.writeFileSync(task.resultPath, JSON.stringify({ outcome: 'success', summary: name + ' 完成', changedFiles: [name], artifacts: [], validation: [{ command: 'readback', status: 'passed', summary: name + ' exists' }], messages: [], blockers: [] }));
       manager.handleTaskEvent({ type: 'session', taskId: task.id, threadId: task.id + '-thread' });
       manager.handleTaskEvent({ type: 'done', taskId: task.id, elapsedMs: 2 });
     });
@@ -231,6 +267,8 @@ manager = new MissionManager({
   assert.equal(restored.mission.status, 'awaiting_confirmation', 'repair must return to the confirmation page');
   await manager.cancel(stalled.mission.id);
 
+  fs.rmSync(path.join(project, 'a.txt'), { force: true });
+  fs.rmSync(path.join(project, 'b.txt'), { force: true });
   const originalReview = planner.reviewWave;
   let failReview = true;
   planner.reviewWave = async ({ tasks }) => {
@@ -252,6 +290,8 @@ manager = new MissionManager({
   assert.equal(reviewed.tasks[0].attempts, 1, 'review retry must not rerun a successful worker');
   planner.reviewWave = originalReview;
 
+  fs.rmSync(path.join(project, 'a.txt'), { force: true });
+  fs.rmSync(path.join(project, 'b.txt'), { force: true });
   const originalStartTask = dispatcher.startTask;
   dispatcher.startTask = task => setImmediate(() => {
     manager.handleTaskEvent({ type: 'started', taskId: task.id });
@@ -271,13 +311,71 @@ manager = new MissionManager({
   assert.equal(environmentPaused.tasks[0].attempts, 1, 'environment failure must not trigger an automatic second attempt');
   assert.equal(environmentPaused.tasks[1].attempts, 0, 'dependent work must remain unstarted');
   assert.equal((await manager.resume(environmentDraft.mission.id)).ok, false, 'replay requires an explicit choice');
+  assert.equal((await manager.resume(environmentDraft.mission.id, false, true)).ok, false, 'sandbox fallback requires an explicit replay');
   dispatcher.startTask = originalStartTask;
-  assert((await manager.resume(environmentDraft.mission.id, true)).ok);
+  assert((await manager.resume(environmentDraft.mission.id, true, true)).ok);
   while (Date.now() < environmentLimit && !['completed', 'failed', 'needs_input'].includes(manager.get(environmentDraft.mission.id).status)) await new Promise(resolve => setTimeout(resolve, 20));
   const environmentRecovered = manager.get(environmentDraft.mission.id);
   assert.equal(environmentRecovered.status, 'completed', JSON.stringify(environmentRecovered));
   assert.equal(environmentRecovered.tasks[0].attempts, 2, 'explicit replay should run only the failed node again');
   assert.equal(environmentRecovered.tasks[1].attempts, 1);
+  assert.equal(environmentRecovered.workerSandbox, 'unelevated', 'compatibility mode must remain scoped to this Mission');
+
+  const originalFinalReview = planner.finalReview;
+  fs.rmSync(path.join(project, 'a.txt'), { force: true });
+  fs.rmSync(path.join(project, 'b.txt'), { force: true });
+  planner.finalReview = async () => ({ ok: true, value: { verdict: 'partial', summary: '部分完成', validationSummary: '两个文件仍需人工检查', risks: ['缺少外部真值'] } });
+  const partialDelivery = await manager.createDraft({ taskText: '验证部分结果需要确认才回写', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert((await manager.confirm(partialDelivery.mission.id)).ok);
+  const partialLimit = Date.now() + 6000;
+  while (Date.now() < partialLimit && manager.get(partialDelivery.mission.id).status !== 'needs_input') await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(manager.get(partialDelivery.mission.id).pendingAction.kind, 'partial_result');
+  assert(!fs.existsSync(path.join(project, 'a.txt')), 'partial review cannot write to main project without confirmation');
+  assert.equal(manager.resolveConflict(partialDelivery.mission.id, 'apply-partial').ok, true);
+  assert.equal(manager.get(partialDelivery.mission.id).status, 'partial');
+
+  fs.rmSync(path.join(project, 'a.txt'), { force: true });
+  fs.rmSync(path.join(project, 'b.txt'), { force: true });
+  planner.finalReview = async () => ({ ok: true, value: { verdict: 'partial', summary: '无法复核', validationSummary: 'helper_unknown_error: apply deny-read ACLs', risks: [] } });
+  const blockedReview = await manager.createDraft({ taskText: '验证主管沙箱故障阻止回写', projectId: 'p1', participants: participants.map(item => ({ ...item, use: true })) });
+  assert((await manager.confirm(blockedReview.mission.id)).ok);
+  const blockedLimit = Date.now() + 6000;
+  while (Date.now() < blockedLimit && manager.get(blockedReview.mission.id).status !== 'needs_input') await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(manager.get(blockedReview.mission.id).pendingAction.kind, 'review_environment');
+  assert(!fs.existsSync(path.join(project, 'a.txt')), 'an unreadable final review must never write to main');
+  await manager.cancel(blockedReview.mission.id);
+  planner.finalReview = originalFinalReview;
+
+  const conflictProject = path.join(root, 'conflict-project');
+  fs.mkdirSync(conflictProject);
+  fs.writeFileSync(path.join(conflictProject, 'base.txt'), 'baseline');
+  let conflictManager;
+  const conflictPlanner = {
+    async planMission() { return { ok: true, value: { objective: '冲突防护', tasks: ['left', 'right'].map((id, index) => ({ id, title: id, brief: id, assigneePetId: participants[index].petId, dependsOn: [], mode: 'write', fileScopes: ['shared.txt'], deliverables: ['shared.txt'], validation: ['读取文件'], required: true })) } }; },
+    async reviewWave({ tasks }) { return { ok: true, value: { summary: '都接受', decisions: tasks.map(task => ({ taskId: task.id, decision: 'accept', reason: '有实际文件变更' })) } }; },
+    async finalReview() { throw new Error('conflicting writes must not reach final review'); },
+  };
+  const conflictDispatcher = {
+    startTask(task) { setImmediate(() => {
+      fs.writeFileSync(path.join(task.projectDir, 'shared.txt'), task.id);
+      fs.writeFileSync(task.resultPath, JSON.stringify({ outcome: 'success', summary: task.id, changedFiles: ['shared.txt'], artifacts: [], validation: [], messages: [], blockers: [] }));
+      conflictManager.handleTaskEvent({ type: 'done', taskId: task.id });
+    }); },
+    cancel() {},
+  };
+  conflictManager = new MissionManager({
+    runtimeRoot: path.join(root, 'conflict-runtime'), projects: () => [{ id: 'conflict', name: '冲突项目', path: conflictProject }],
+    roster: manager.roster, supervisorModel: () => null, planner: conflictPlanner, dispatcher: conflictDispatcher, ruflo: new FakeRufloAdapter(),
+  });
+  const conflictDraft = await conflictManager.createDraft({ taskText: '写入同一路径', projectId: 'conflict', participants: participants.map(item => ({ ...item, use: true })) });
+  assert(conflictDraft.ok);
+  assert((await conflictManager.confirm(conflictDraft.mission.id)).ok);
+  const conflictLimit = Date.now() + 6000;
+  while (Date.now() < conflictLimit && conflictManager.get(conflictDraft.mission.id).status !== 'needs_input') await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(conflictManager.get(conflictDraft.mission.id).pendingAction.kind, 'merge_conflict');
+  assert.equal((await conflictManager.resume(conflictDraft.mission.id)).ok, false, 'conflicting accepted tasks must not be skipped on resume');
+  assert(!fs.existsSync(path.join(conflictProject, 'shared.txt')), 'unresolved same-path changes must never reach the main project');
+  await conflictManager.cancel(conflictDraft.mission.id);
 
   const setupRecovery = {
     id: 'setup-recovery-test', schemaVersion: 2, engine: 'ruflo', legacy: false,

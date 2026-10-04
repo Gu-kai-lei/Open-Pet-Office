@@ -246,10 +246,69 @@ class MissionWorkspace {
   }
 
   applyFinal(mission, changeSet) {
-    const backup = path.join(mission.runtimeDir, 'backup-before-apply');
+    const journal = path.join(mission.runtimeDir, 'apply-pending.json');
+    if (fs.existsSync(journal)) throw new Error('发现尚未恢复的主项目回写记录，已停止重复回写。');
+    const backup = path.join(mission.runtimeDir, 'backup-before-apply-' + Date.now());
     copyTree(mission.projectPath, backup);
-    this.applyChangeSet(mission.projectPath, changeSet);
+    const entries = (changeSet.changes || []).map(change => {
+      const rel = safeRel(change.path);
+      const target = workspacePath(mission.projectPath, rel);
+      const originalHash = fs.existsSync(target) ? hashFile(target) : null;
+      const source = change.kind === 'deleted' ? null : workspacePath(changeSet.filesDir, rel);
+      const targetHash = source ? hashFile(source) : null;
+      if (source && targetHash !== change.hash) throw new Error('待回写文件与已复核清单不符：' + rel);
+      return { path: rel, originalHash, targetHash };
+    });
+    const record = { projectPath: mission.projectPath, backup, entries };
+    const handle = fs.openSync(journal, 'wx');
+    try { fs.writeFileSync(handle, JSON.stringify(record)); fs.fsyncSync(handle); }
+    finally { fs.closeSync(handle); }
+    try {
+      this.applyChangeSet(mission.projectPath, changeSet);
+      for (const entry of entries) {
+        const target = workspacePath(mission.projectPath, entry.path);
+        const actual = fs.existsSync(target) ? hashFile(target) : null;
+        if (actual !== entry.targetHash) throw new Error('回写后文件校验失败：' + entry.path);
+      }
+      fs.rmSync(journal);
+    } catch (error) {
+      try { this.restoreApply(record); fs.rmSync(journal); }
+      catch (restoreError) { error.message += '；自动回滚失败：' + restoreError.message; }
+      throw error;
+    }
     return { ok: true, backup };
+  }
+
+  restoreApply(record, checkCurrent = true) {
+    const resolved = record.entries.map(entry => {
+      const target = workspacePath(record.projectPath, safeRel(entry.path));
+      const source = workspacePath(record.backup, safeRel(entry.path));
+      const actual = fs.existsSync(target) ? hashFile(target) : null;
+      if (checkCurrent && actual !== entry.originalHash && actual !== entry.targetHash)
+        throw new Error('主项目文件已被其他操作修改，无法自动回滚：' + entry.path);
+      if (entry.originalHash) {
+        if (!fs.existsSync(source) || hashFile(source) !== entry.originalHash) throw new Error('回写备份损坏：' + entry.path);
+      }
+      return { entry, target, source };
+    });
+    for (const { entry, target, source } of resolved) {
+      if (entry.originalHash) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target);
+      } else if (fs.existsSync(target)) fs.rmSync(target, { force: true });
+    }
+  }
+
+  recoverInterruptedApply(mission) {
+    const journal = path.join(mission.runtimeDir, 'apply-pending.json');
+    if (!fs.existsSync(journal)) return { recovered: false };
+    const record = JSON.parse(fs.readFileSync(journal, 'utf8'));
+    if (path.resolve(record.projectPath) !== path.resolve(mission.projectPath) ||
+        !path.resolve(record.backup).startsWith(path.resolve(mission.runtimeDir) + path.sep))
+      throw new Error('回写记录的项目或备份路径不匹配。');
+    this.restoreApply(record);
+    fs.rmSync(journal);
+    return { recovered: true };
   }
 
   cleanupSuccessful(mission) {

@@ -151,12 +151,27 @@ async function testWorkerPrompt() {
   dispatcher.setConcurrency(1);
   dispatcher.startTask({
     id: 'worker-pipe', projectDir: project, skipLegacyDirs: true,
+    workerSandbox: 'unelevated',
     briefPath: path.join(project, 'worker.brief.md'), resultPath: path.join(project, 'worker.result.md'),
     brief: '测试工作者提示词', prompt: '# WORKER-PROMPT\nWORKER-LINE-2\nWORKER-LINE-3',
   });
   await done;
   assert(readCapture().includes('# WORKER-PROMPT\nWORKER-LINE-2\nWORKER-LINE-3'));
   assert.equal(fs.readFileSync(path.join(project, 'worker.result.md'), 'utf8'), 'worker complete');
+  assert(fs.readFileSync(argsPath, 'utf8').includes('windows.sandbox='), 'explicit compatibility choice must be passed to the worker CLI');
+}
+
+async function testSupervisorFallback() {
+  writeFakeOutput({ ok: true });
+  const result = await planner.runStructured({
+    projectDir: project, missionDir, kind: 'supervisor-fallback', prompt: 'Review only',
+    schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } },
+    threadId: null, workerSandbox: 'unelevated',
+  });
+  assert(result.ok, result.error);
+  const args = fs.readFileSync(argsPath, 'utf8');
+  assert(args.includes('windows.sandbox='), 'reviewer must receive the same explicit compatibility mode');
+  assert(args.includes('read-only'), 'reviewer must remain read-only');
 }
 
 (async () => {
@@ -165,6 +180,7 @@ async function testWorkerPrompt() {
     await testResumedMissionPrompt();
     await testBusySupervisorFallsBackToFreshThread();
     await testWorkerPrompt();
+    await testSupervisorFallback();
     console.log('prompt pipe tests passed');
   } finally {
     dispatcher.shutdown();

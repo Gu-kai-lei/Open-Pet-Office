@@ -1476,7 +1476,7 @@ ipcMain.handle('mission:confirm', (e, id) => missionManager.confirm(id));
 ipcMain.handle('mission:regenerate', async (e, id) => missionManager.regenerate(id));
 ipcMain.handle('mission:cancel', (e, id) => missionManager.cancel(id));
 ipcMain.handle('mission:cancelTask', (e, payload = {}) => missionManager.cancelTask(payload.missionId, payload.taskId));
-ipcMain.handle('mission:resume', async (e, payload) => missionManager.resume(typeof payload === 'string' ? payload : payload.id, !!(payload && payload.allowReplay)));
+ipcMain.handle('mission:resume', async (e, payload) => missionManager.resume(typeof payload === 'string' ? payload : payload.id, !!(payload && payload.allowReplay), !!(payload && payload.sandboxFallback)));
 ipcMain.handle('mission:openArtifact', async (e, payload = {}) => {
   try {
     const file = missionManager.artifactPath(payload.missionId, payload.relativePath);
