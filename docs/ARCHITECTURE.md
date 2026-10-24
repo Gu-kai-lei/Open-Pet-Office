@@ -28,7 +28,10 @@ flowchart LR
 | `src/appserver.js` | 单 Agent 持久会话、流式回复、审批与用户提问 |
 | `src/session-monitor.js` | 只读增量聚合 Codex Desktop JSONL，恢复和更新实时任务 |
 | `src/mission-manager.js` | Mission 状态机、依赖波次、阶段复核、重派、恢复与最终结论 |
-| `src/mission-workspace.js` | Git worktree、脏工作区快照、非 Git 副本、集成与冲突检测 |
+| `src/mission-workspace.js` | Git worktree、脏工作区快照、非 Git 副本（均遵循 `.gitignore`）、集成与冲突检测 |
+| `src/local-coordinator.js` | 默认分工引擎：任务记账与项目记忆，无外部进程 |
+| `src/ruflo-adapter.js` | 可选的实验性 Ruflo 引擎 |
+| `src/codex-launcher.js` | 解析并直接启动 Codex，不经过 `cmd.exe` |
 | `src/dispatcher.js` | 工作者进程并发、进度解析、取消和资源清理 |
 | `src/inbox.js` | 安全复制拖入文件、限制路径与文件大小、生成相对路径 |
 | `renderer/` | 桌宠、输入框、任务中心、项目、模型、形象和设置 UI |
@@ -63,6 +66,7 @@ planning → awaiting_confirmation → running → reviewing
 ├── logs/                 # 轮换应用日志
 ├── crashes/              # 本地脱敏崩溃记录
 ├── runtime/              # Mission 运行环境
+├── memory/               # 内置协调器的项目记忆
 └── bridge/               # 可选的文件桥接目录
 
 <project>/.pet-office/

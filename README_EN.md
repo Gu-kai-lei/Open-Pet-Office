@@ -3,10 +3,10 @@
 
 # Open Pet Office
 
-### Bring your AI agent team to the Windows desktop
+### A Codex companion you can see
 
-One supervisor pet receives your work and summons up to four workers when needed.<br>
-Follow live Codex tasks, mix models, run in isolated workspaces, and review every delivery.
+One supervisor pet lives on your desktop: live Codex tasks, one inbox for approvals and questions, and screenshots or files you can just drop in.<br>
+When a job needs a team, turn on Delegation to run up to four workers in isolated workspaces, reviewed before anything is written back.
 
 [简体中文](README.md) · [English](README_EN.md)
 
@@ -29,16 +29,16 @@ Follow live Codex tasks, mix models, run in isolated workspaces, and review ever
 <table>
   <tr>
     <td width="33%" valign="top">
-      <h3>🐾 Collaboration you can see</h3>
-      <p>The supervisor stays on your desktop. Workers appear only when a task needs them, with clear thinking, working, waiting, failure, and completion states.</p>
+      <h3>🐾 Codex you can see</h3>
+      <p>Whether a task starts in Codex Desktop, the CLI, or a pet, the supervisor shows its progress, and approvals and questions wait in one activity center.</p>
     </td>
     <td width="33%" valign="top">
-      <h3>🧠 A real supervisor loop</h3>
-      <p>The supervisor plans dependencies, dispatches work in waves, reviews each stage, retries or reassigns failures, and performs the final review.</p>
+      <h3>🧭 Delegation out of the box</h3>
+      <p>Delegation uses a built-in coordinator and needs nothing beyond Codex CLI. The supervisor plans dependencies, dispatches waves, reviews each stage, reassigns failures, and performs the final review.</p>
     </td>
     <td width="33%" valign="top">
       <h3>🔒 Project-safe execution</h3>
-      <p>Every worker runs in an isolated worktree or snapshot. Conflicts, deletions, and out-of-scope writes pause instead of overwriting your files.</p>
+      <p>Every worker runs in an isolated worktree or snapshot, and datasets or weights excluded by <code>.gitignore</code> are never copied. Conflicts, deletions, and out-of-scope writes pause instead of overwriting your files.</p>
     </td>
   </tr>
 </table>
@@ -48,22 +48,25 @@ Follow live Codex tasks, mix models, run in isolated workspaces, and review ever
 1. Download `Pet-Office-*-portable.exe` from the [latest Release](https://github.com/Gu-kai-lei/Open-Pet-Office/releases/latest).
 2. Install and sign in to Codex CLI 0.155 or newer.
 3. Run the app, hover over the supervisor pet, and click the compose icon.
-4. Send a simple task directly, or enable Delegation for a project, agents, and models.
+4. Send a simple task directly, or enable Delegation for a project, agents, and models. Delegation uses the built-in coordinator, so there is nothing else to install.
+
+> [!NOTE]
+> The newest build on Releases is still v0.13.0. The v0.16 built-in coordinator, large-project isolation, and hardening require running from source (see "Run from source" below) until the next portable ships.
 
 The public build is currently unsigned, so Windows SmartScreen may show an unknown-publisher warning. The Release page includes a SHA-256 digest for verification.
 
 Want third-party models? The optional [OpenCodex](https://github.com/lidge-jun/opencodex) layer can route DeepSeek, GLM, and other providers into Codex. See the [getting started guide](docs/GETTING_STARTED_EN.md) for details.
 
-## 📦 What's new
+## 📦 Latest
 
-**v0.13.3 · 2026-09-22**
+**v0.16.0 · 2026-10-24 (merged in source, portable pending) · Lightweight first**
 
-- 🎨 Warm Office, Dark Workbench, and system-matched interface themes
-- 🧭 One primary action on the overview; sensitive project actions expand only when needed
-- 🔔 Active and attention-needed tasks stay prominent while recent activity is collapsed by default
-- 🧩 Consistent hierarchy and readability across tabs, forms, projects, skins, and delegation
+- 🧭 Delegation now uses a **built-in coordinator** by default: no Node.js, npm or network install. Ruflo becomes an optional experimental engine; existing Ruflo Missions keep their engine.
+- 🗂️ Isolated workspaces follow `.gitignore`, so datasets, model weights and build output are never copied to every worker. Oversized projects fail fast with a clear message, and only files about to be overwritten are backed up.
+- 🔒 Hardening: renderer CSP, "open file" limited to folders and documents inside projects, allow-listed settings patches, and a backup before `~/.codex/config.toml` is changed.
+- ⚡ Codex starts without `cmd.exe`, so arguments arrive verbatim; fullscreen detection uses one long-lived helper (≈0.5 s → a few ms per check).
 
-See the 🗺️ [roadmap](docs/ROADMAP_EN.md) for the full iteration plan and previous versions.
+> The public download is still v0.13.0; run from source until v0.16.0 portable ships. See [docs/PIVOT.md](docs/PIVOT.md) (Chinese) for the full review.
 
 ## 🚀 From one prompt to a reviewed delivery
 
@@ -92,7 +95,8 @@ With Delegation off, the pet is a lightweight entry point to a persistent Codex 
 | 🐾 **Live Codex tasks** | Read-only monitoring of local Codex sessions, including work started directly in Codex Desktop |
 | 🧠 **1 + 4 agent team** | One supervisor and up to four workers, each with its own model |
 | 🗂️ **Persistent Missions** | Dependency graph, execution waves, structured reports, stage reviews, reassignment, and restart recovery |
-| 🌳 **Isolated workspaces** | Git worktrees for clean repositories; snapshots for dirty Git and non-Git projects |
+| 🧭 **Delegation engine** | Built-in coordinator by default with no extra install; Ruflo 3.43.0 can be enabled in Settings as an experimental engine |
+| 🌳 **Isolated workspaces** | Git worktrees for clean repositories; snapshots for dirty Git and non-Git projects; both follow `.gitignore`, and oversized projects get a clear message |
 | 📁 **Projects and sessions** | Create, continue, or reset context; rename, archive, restore, filter, and clean attachments |
 | ✅ **Approvals and questions** | Handle command approvals, agent questions, conflicts, and recovery from one activity center |
 | 📎 **File drop** | Drop files onto a pet to copy them into the project `inbox/` and attach relative paths |
@@ -126,6 +130,8 @@ Open Pet Office uses Codex as the conversation and execution surface, with OpenC
 
 Mission plans and review records live under `.pet-office/` in the project. Runtime copies and complete logs live under `~/.pet-office/runtime/`. Workers write only to their own isolated environments; accepted work enters an integration workspace before the supervisor prepares write-back.
 
+Isolated environments contain only the visible project files: datasets, weights, and build output excluded by `.gitignore` are not copied, and workers may read them from the main project only.
+
 These conditions pause for user action:
 
 - The main project changes while a Mission is running
@@ -141,6 +147,7 @@ Read [Architecture](docs/ARCHITECTURE_EN.md) for the module map, lifecycle, stor
 | --- | --- |
 | [Getting started](docs/GETTING_STARTED_EN.md) | Installation, first chat, Missions, file drop, and troubleshooting |
 | [Architecture](docs/ARCHITECTURE_EN.md) | Modules, Mission lifecycle, isolation, local data, and safety boundaries |
+| [Review and pivot](docs/PIVOT.md) (Chinese) | v0.16 findings, the reasons for the pivot, and next priorities |
 | [Roadmap](docs/ROADMAP_EN.md) | Completed versions and next-stage direction |
 | [Changelog](CHANGELOG.md) | Release additions and fixes |
 | [Contributing](CONTRIBUTING.md) | Local development, tests, and pull request expectations |
@@ -158,7 +165,14 @@ npm start
 
 Build the Windows portable executable with `npm run dist`.
 
-Tests cover session aggregation, partial and rotated JSONL, lifecycle states, redaction, activity-panel races, file ingestion, conversation recovery, Mission dependency and isolation behavior, and v0.12 / v0.13 product contracts.
+If the portable build is also installed, keep a source run's data and Electron profile apart with `PET_OFFICE_HOME`:
+
+```powershell
+$env:PET_OFFICE_HOME = "$env:TEMP\pet-office-dev"
+npm start
+```
+
+Tests cover session aggregation, partial and rotated JSONL, lifecycle states, redaction, activity-panel races, file ingestion, conversation recovery, Mission dependency and isolation behavior, the built-in coordinator, the Codex launcher, IPC and path safety, and per-release product contracts.
 
 ## 🛡️ Privacy and safety
 
@@ -166,6 +180,9 @@ Tests cover session aggregation, partial and rotated JSONL, lifecycle states, re
 - API keys, authorization headers, tokens, and passwords are redacted from desktop and crash summaries.
 - Single-agent work keeps Codex sandbox and approval semantics.
 - Mission workers can write only inside their isolated environments.
+- The renderer runs under a strict Content-Security-Policy, and "open file" is limited to folders and documents inside your projects; executables are never launched.
+- `~/.codex/config.toml` is backed up with a timestamp before Pet Office changes it.
+- Codex starts directly instead of through `cmd.exe`, so arguments are never reinterpreted by a shell.
 - Crash reports remain local and no telemetry is uploaded automatically.
 - File drop copies the source; it never moves or deletes it.
 
@@ -176,6 +193,7 @@ Report security issues privately through [GitHub Security Advisories](https://gi
 
 - Windows 10/11 is the current supported platform.
 - Single-agent conversations use Codex App Server; Mission workers currently execute through parallel Codex CLI processes.
+- The Ruflo engine is experimental and needs Node.js ≥ 20, npm ≥ 9, and a network install; the default built-in coordinator does not.
 - Session Monitor depends on the local Codex JSONL format.
 - `codex://threads/<id>` is still an experimental deep link.
 - Petdex appearances are discovered in-app but not downloaded in-app yet.

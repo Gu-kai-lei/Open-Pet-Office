@@ -1,8 +1,8 @@
 {
   "name": "open-pet-office",
   "productName": "Pet Office",
-  "version": "0.15.1",
-  "description": "电子办公室：多模型协作桌宠（Codex + DeepSeek，经 OpenCodex 路由）",
+  "version": "0.16.0",
+  "description": "Codex 桌面伴侣：实时任务、审批收件箱与可选的安全多 Agent 分工（Windows）",
   "author": "Gu-kai-lei",
   "keywords": [
     "codex",

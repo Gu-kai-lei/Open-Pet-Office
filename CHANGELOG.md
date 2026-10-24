@@ -2,6 +2,44 @@
 
 本项目遵循面向产品迭代的版本记录。完整提交历史请查看 GitHub。
 
+## 0.16.0 — 2026-10-24
+
+转向：轻量优先。完整说明见 [docs/PIVOT.md](docs/PIVOT.md)。
+
+### Changed
+
+- 分工默认使用内置协调器，无需 Node.js、npm 或联网安装；Ruflo 改为设置中可选的实验性引擎。每个 Mission 记录创建时的引擎，切换默认值不影响已有 Mission。
+- 隔离工作区只包含项目的可见文件（已跟踪文件和未被 `.gitignore` 排除的文件），并跳过 `__pycache__`、`.venv` 等目录；超过 2 万文件或 2 GB 时停止并给出处理建议。
+- 回写主项目前只备份将被覆盖的文件，不再复制整个项目。
+- Codex 进程直接启动（`codex.exe` 或 npm shim 指向的 `node codex.js`），不再经过 `cmd.exe`；无法识别的启动器仍回退到原方式。
+- 全屏检测改为常驻 PowerShell 进程，只编译一次 Win32 接口。
+- 仅在选用 Ruflo 引擎时诊断面板才探测 Ruflo。
+
+### Fixed
+
+- `shell:open` 只允许打开项目和运行目录内的文件夹与文档，拒绝可执行文件和 junction 越界。
+- 渲染层加入严格的 Content-Security-Policy。
+- 设置与界面补丁按白名单过滤，渲染层不能写入任意状态字段。
+- 桥接任务只能使用已添加的项目目录，不能在任意绝对路径创建项目。
+- 改写 `~/.codex/config.toml` 前生成带时间戳的备份，并原子写入。
+- 协调器状态镜像失败不再让已通过复核的 Mission 整体失败。
+- 与桌宠对话不再在项目中创建 `HIVE.md`、`MEMORY.md`、`tasks/`、`messages/`。
+- 遵循 `CODEX_HOME` 环境变量。
+
+### Removed
+
+- 从未被使用的遗留批处理流程和 `planner.splitTask`。
+
+### Development
+
+- `PET_OFFICE_HOME` 可把应用数据和 Electron 配置目录隔离到指定位置，便于从源码运行而不影响已安装版本。
+- 截图回归脚本移到 `src/capture-views.js`。
+- 新增安全、隔离、内置引擎、启动器和全屏检测五组测试；`npm test` 共 23 组。
+
+### 验收状态
+
+- `npm test` 全部通过；在隔离目录中以截图模式启动应用，计划、任务中心、诊断和附件界面正常。尚未在真实 Codex 上完成内置引擎的端到端验收。
+
 ## 0.15.1 — 2026-09-29
 
 ### Fixed
