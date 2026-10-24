@@ -28,6 +28,7 @@ const files = [
   'src/fullscreen-probe.js',
   'src/link-utils.js',
   'src/codex-transport.js',
+  'src/ipc-guards.js',
   'src/main.js',
   'src/preload.js',
   'renderer/app.js',
@@ -54,6 +55,7 @@ const files = [
   'scripts/prompt-pipe-test.js',
   'scripts/transport-test.js',
   'scripts/mission-real-e2e.js',
+  'scripts/security-test.js',
 ];
 
 let failed = false;

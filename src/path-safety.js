@@ -27,4 +27,27 @@ function workspacePath(root, relative) {
   return target;
 }
 
-module.exports = { workspacePath };
+// shell.openPath launches executables, so the renderer may only open existing
+// folders or documents inside roots that the main process already trusts.
+const EXECUTABLE_EXTENSIONS = new Set([
+  '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+  '.msi', '.msp', '.scr', '.hta', '.cpl', '.lnk', '.url', '.reg', '.jar', '.pif', '.appref-ms',
+]);
+
+function openablePath(candidate, roots) {
+  if (typeof candidate !== 'string' || !candidate.trim() || !path.isAbsolute(candidate)) return null;
+  let real;
+  try { real = fs.realpathSync(path.resolve(candidate)); } catch { return null; }
+  const allowed = (roots || []).filter(Boolean).some(root => {
+    try {
+      const realRoot = fs.realpathSync(path.resolve(root));
+      return real === realRoot || inside(realRoot, real);
+    } catch { return false; }
+  });
+  if (!allowed) return null;
+  const stat = fs.statSync(real);
+  if (stat.isFile() && EXECUTABLE_EXTENSIONS.has(path.extname(real).toLowerCase())) return null;
+  return stat.isFile() || stat.isDirectory() ? real : null;
+}
+
+module.exports = { workspacePath, openablePath, EXECUTABLE_EXTENSIONS };

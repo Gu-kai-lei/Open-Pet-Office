@@ -12,7 +12,7 @@ const planner = require('./planner');
 const bridge = require('./bridge');
 const { AppServerClient } = require('./appserver');
 const { CodexSessionMonitor, _internals: { redact: safeProgressText } } = require('./session-monitor');
-const { workspacePath } = require('./path-safety');
+const { workspacePath, openablePath } = require('./path-safety');
 const inbox = require('./inbox');
 const diagnostics = require('./diagnostics');
 const { MissionManager } = require('./mission-manager');
@@ -23,11 +23,12 @@ const { recommendAgents } = require('./recommender');
 const releaseManager = require('./release-manager');
 const { isFullscreenBounds, probeForegroundWindow } = require('./fullscreen-probe');
 const { normalizeDroppedLinks } = require('./link-utils');
+const { RENDERER_SETTINGS, RENDERER_UI, pickKeys } = require('./ipc-guards');
 
 cfg.ensureDirs();
 try {
   const providerSync = require('./codex-transport').ensureUserProviderConfig();
-  if (providerSync.changed) cfg.log('codex transport: persisted OpenCodex HTTP provider so desktop can open Pet Office threads');
+  if (providerSync.changed) cfg.log('codex transport: persisted OpenCodex HTTP provider so desktop can open Pet Office threads' + (providerSync.backup ? '; previous config saved as ' + path.basename(providerSync.backup) : ''));
 } catch (error) {
   cfg.log('codex transport provider sync failed: ' + error.message);
 }
@@ -1026,8 +1027,16 @@ function onBridgeOrder(order) {
     if (order.action === 'delegate') {
       let proj = null;
       if (order.project) {
-        proj = state.projects.find(p => p.id === order.project || p.name === order.project)
-          || createProjectDir(safeName(order.project), path.isAbsolute(order.project) ? order.project : undefined);
+        const requested = String(order.project);
+        proj = state.projects.find(p => p.id === requested || p.name === requested
+          || (path.isAbsolute(requested) && path.resolve(p.path) === path.resolve(requested)));
+        // Any local process can drop a bridge order, so it may only target
+        // folders the user already added; new folders are created by name only.
+        if (!proj && path.isAbsolute(requested)) {
+          bridge.writeResult('bridge-error', '桥接任务只能使用已在 Pet Office 中添加的项目目录：' + requested, null);
+          return;
+        }
+        if (!proj) proj = createProjectDir(safeName(requested));
       } else {
         proj = activeProject() || createProjectDir('bridge-' + Date.now().toString(36));
       }
@@ -1595,7 +1604,9 @@ ipcMain.handle('settings:set', (e, patch) => {
   const previousCaptureShortcut = state.settings.captureShortcut;
   const previousDisplay = state.settings.displayMode;
   const previousFullscreen = state.settings.fullscreenBehavior;
-  Object.assign(state.settings, patch || {});
+  Object.assign(state.settings, pickKeys(patch, RENDERER_SETTINGS));
+  state.settings.autostart = !!state.settings.autostart;
+  state.settings.themeMode = ['warm', 'dark', 'system'].includes(state.settings.themeMode) ? state.settings.themeMode : 'warm';
   state.settings.maxParallel = Math.max(1, Math.min(5, Number(state.settings.maxParallel) || 5));
   state.settings.petScale = Math.max(0.8, Math.min(1.4, Number(state.settings.petScale) || 1));
   state.settings.compactMode = !!state.settings.compactMode;
@@ -1618,8 +1629,9 @@ ipcMain.handle('settings:set', (e, patch) => {
   return publicState();
 });
 ipcMain.handle('ui:set', (e, patch) => {
-  Object.assign(state.ui, patch || {});
+  Object.assign(state.ui, pickKeys(patch, RENDERER_UI));
   if (!Array.isArray(state.ui.hiddenPets)) state.ui.hiddenPets = [];
+  if (!state.ui.petPositions || typeof state.ui.petPositions !== 'object' || Array.isArray(state.ui.petPositions)) state.ui.petPositions = {};
   cfg.saveState(state);
   return publicState();
 });
@@ -1659,7 +1671,16 @@ ipcMain.handle('cap:set', (e, { petId, cap }) => {
   cfg.saveState(state);
   return true;
 });
-ipcMain.handle('shell:open', (e, p) => { try { return shell.openPath(p); } catch { return null; } });
+ipcMain.handle('shell:open', async (e, p) => {
+  const roots = [...state.projects.map(project => project.path), cfg.DIRS.runtime, cfg.DIRS.fromPets];
+  let target = null;
+  try { target = openablePath(p, roots); } catch {}
+  if (!target) {
+    cfg.log('shell:open refused a path outside trusted roots or an executable file');
+    return '只能打开项目或 Pet Office 运行目录中的文件夹与文档。';
+  }
+  try { return await shell.openPath(target); } catch (error) { return error.message; }
+});
 ipcMain.handle('shell:external', async (e, url) => {
   const normalized = normalizeDroppedLinks({ plain: String(url || '') })[0];
   if (!normalized) return false;

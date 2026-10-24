@@ -69,19 +69,30 @@ function mergeProviderBlock(text) {
   return { text: prefix + block + '\n', changed: true, blocked: false };
 }
 
-function ensureUserProviderConfig(enabled = usesOpenCodexProxy()) {
+function ensureUserProviderConfig(enabled = usesOpenCodexProxy(), codexHome = CODEX_HOME) {
   if (!enabled) return { ok: true, changed: false, reason: 'disabled' };
-  const file = path.join(CODEX_HOME, 'config.toml');
+  const file = path.join(codexHome, 'config.toml');
   let text = '';
+  let existed = true;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+    existed = false;
   }
   const merged = mergeProviderBlock(text);
   if (!merged.changed) return { ok: true, changed: false, reason: merged.blocked ? 'unmanaged' : 'current' };
-  fs.writeFileSync(file, merged.text, 'utf8');
-  return { ok: true, changed: true };
+  // This is the user's global Codex config: keep a restorable copy of the
+  // exact bytes we replace and never leave a half-written file behind.
+  let backup = null;
+  if (existed) {
+    backup = file + '.pet-office-backup-' + new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL);
+  }
+  const next = file + '.pet-office-next';
+  fs.writeFileSync(next, merged.text, 'utf8');
+  fs.renameSync(next, file);
+  return { ok: true, changed: true, backup };
 }
 
 module.exports = { PROVIDER_ID, usesOpenCodexProxy, httpProviderArgs, ensureUserProviderConfig, mergeProviderBlock };
