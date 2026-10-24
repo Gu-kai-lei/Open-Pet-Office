@@ -38,7 +38,7 @@ for (const token of [
   assert(style.includes(token), 'missing semantic visual token or component: ' + token);
 }
 
-assert(main.includes("captureView === 'theme-dark'"), 'dark theme must have visual capture coverage');
+assert(Object.prototype.hasOwnProperty.call(require('../src/capture-views').CAPTURE_VIEWS, 'theme-dark'), 'dark theme must have visual capture coverage');
 assert.equal((renderer.match(/id="p-new-session"/g) || []).length, 1, 'project page must not duplicate session action IDs');
 assert.equal((renderer.match(/id="p-reset-context"/g) || []).length, 1, 'project page must not duplicate reset action IDs');
 

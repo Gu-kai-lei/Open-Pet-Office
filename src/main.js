@@ -25,6 +25,7 @@ const releaseManager = require('./release-manager');
 const { isFullscreenBounds, probeForegroundWindow, stopForegroundProbe } = require('./fullscreen-probe');
 const { normalizeDroppedLinks } = require('./link-utils');
 const { RENDERER_SETTINGS, RENDERER_UI, pickKeys, delegationEngine } = require('./ipc-guards');
+const { captureScript, CAPTURE_STATE_SCRIPT } = require('./capture-views');
 
 cfg.ensureDirs();
 try {
@@ -32,6 +33,11 @@ try {
   if (providerSync.changed) cfg.log('codex transport: persisted OpenCodex HTTP provider so desktop can open Pet Office threads' + (providerSync.backup ? '; previous config saved as ' + path.basename(providerSync.backup) : ''));
 } catch (error) {
   cfg.log('codex transport provider sync failed: ' + error.message);
+}
+// An isolated run (PET_OFFICE_HOME) must not share Chromium storage or the
+// single-instance lock with an installed copy of the app.
+if (process.env.PET_OFFICE_HOME) {
+  try { app.setPath('userData', path.join(cfg.DIRS.app, 'electron')); } catch (error) { cfg.log('userData override failed: ' + error.message); }
 }
 try {
   app.setPath('crashDumps', cfg.DIRS.crashes);
@@ -50,8 +56,6 @@ if (!state.projects.some(project => project.id === state.activeProjectId && !pro
 let quotaCache = { at: 0, lastSuccessAt: 0, ok: false, stale: false, reports: [], error: null };
 let skinCache = { at: 0, items: [] };
 const spriteDataCache = new Map();
-let batchSeq = 0;
-const batches = new Map();
 const petSessionTokens = new Map();
 const appServer = new AppServerClient();
 const petThreads = new Map(Object.entries(state.conversations || {}));
@@ -429,8 +433,6 @@ function nextActiveProject(excludeId = null) {
 function projectBusy(projectId) {
   const live = [...liveChats.values()].find(chat => chat.task.projectId === projectId);
   if (live) return { busy: true, reason: '项目中仍有桌宠会话正在运行。' };
-  const activeBatch = [...batches.values()].find(batch => batch.projectId === projectId && batch.status !== 'done' && (batch.status === 'planning' || [...batch.tasks.values()].some(task => ['queued', 'running', 'waiting_input'].includes(task.status))));
-  if (activeBatch) return { busy: true, reason: '项目中仍有分工任务正在运行。' };
   const activeMission = missionManager.snapshot().find(mission => mission.projectId === projectId && ['setup', 'planning', 'awaiting_confirmation', 'running', 'reviewing', 'integrating', 'needs_input', 'interrupted'].includes(mission.status));
   if (activeMission) return { busy: true, reason: '项目中仍有未结束的 Mission。' };
   return { busy: false };
@@ -741,7 +743,6 @@ async function startPetChat({ taskText, projectId, petId, model }) {
   const used = petSessionTokens.get(pet.id) || 0;
   if (cap && used >= cap) return { ok: false, error: '这个 Agent 已达到你设置的用量上限。' };
 
-  dispatcher.ensureProjectDirs(proj.path);
   const key = proj.id + ':' + pet.id;
   const existingThread = petThreads.get(key);
   if (startingChats.has(key) || (existingThread && liveChats.has(existingThread))) return { ok: false, error: pet.name + ' 正在处理上一条消息。' };
@@ -928,100 +929,14 @@ async function handoffPetChat(taskId) {
   return { ok: true, threadId: chat.threadId };
 }
 
-function serializeBatch(b) {
-  return [...b.tasks.values()].map(t => ({ ...t }));
-}
-
-function persistTask(batch, task) {
-  if (!Array.isArray(state.history)) state.history = [];
-  const record = { ...task, batchId: batch.id, projectName: batch.projectName, projectId: batch.projectId };
-  const index = state.history.findIndex(x => x.id === task.id);
-  if (index >= 0) state.history[index] = record;
-  else state.history.push(record);
-  state.history = state.history.slice(-100);
-  cfg.saveState(state);
-  emitTaskSnapshot();
-}
-
-function summaryMarkdown(batch) {
-  const lines = ['# Pet Office 汇总', '- 项目: ' + batch.projectName, '- 任务: ' + batch.taskText, '- 完成: ' + new Date().toLocaleString('zh-CN'), '', '## 各成员结果'];
-  for (const t of batch.tasks.values()) {
-    lines.push('### ' + t.petName + ' · ' + (t.model || 'codex默认') + ' · ' + t.status);
-    lines.push('**简报**: ' + (t.brief || ''));
-    let body = '';
-    try { body = fs.readFileSync(t.resultPath, 'utf8'); } catch {}
-    lines.push(body ? '**结果**:\n\n' + body.slice(0, 6000) : '(无结果文件)');
-  }
-  return lines.join('\n\n');
-}
-
-function checkBatchDone(batch) {
-  const all = [...batch.tasks.values()];
-  if (!all.length) return;
-  if (!all.every(t => ['done', 'failed', 'cancelled', 'capped'].includes(t.status))) return;
-  const md = summaryMarkdown(batch);
-  const file = bridge.writeResult('batch-' + batch.id, md, {
-    batchId: batch.id,
-    project: batch.projectName,
-    task: batch.taskText,
-    tasks: all.map(t => ({ petName: t.petName, model: t.model, status: t.status, tokens: t.tokens, threadId: t.threadId })),
-  });
-  batch.summaryFile = file;
-  batch.status = 'done';
-  cfg.log('batch done: ' + file);
-  send('batch:done', { batchId: batch.id, file, tasks: serializeBatch(batch) });
-}
-
 async function startDelegation({ taskText, projectId, participants }) {
   // Compatibility entry points use the same confirmation gate as the UI.
   return missionManager.createDraft({ taskText, projectId, participants });
 }
 
+// Every dispatcher task belongs to a Mission; the legacy batch flow is gone.
 function onTaskEvent(ev) {
-  if (missionManager.handleTaskEvent(ev)) return;
-  const batch = [...batches.values()].find(b => b.tasks.has(ev.taskId));
-  if (!batch) return;
-  const rec = batch.tasks.get(ev.taskId);
-  switch (ev.type) {
-    case 'started': rec.status = 'running'; rec.startedAt = Date.now(); break;
-    case 'progress':
-      rec.progress = String(ev.text || '').slice(0, 320);
-      rec.progressStage = ev.stage || 'working';
-      rec.updatedAt = Date.now();
-      break;
-    case 'session': {
-      rec.threadId = ev.threadId;
-      const proj = state.projects.find(p => p.id === batch.projectId);
-      if (proj && ev.threadId) {
-        proj.threadIds = Array.isArray(proj.threadIds) ? proj.threadIds : [];
-        if (!proj.threadIds.includes(ev.threadId)) proj.threadIds.push(ev.threadId);
-        proj.threadIds = proj.threadIds.slice(-30);
-        proj.updatedAt = Date.now();
-      }
-      break;
-    }
-    case 'usage': rec.tokens = Math.max(rec.tokens || 0, ev.tokens); break;
-    case 'done':
-      rec.status = 'done'; rec.elapsedMs = ev.elapsedMs;
-      try {
-        const resultPreview = fs.readFileSync(rec.resultPath, 'utf8').replace(/\s+/g, ' ').trim();
-        if (resultPreview) rec.progress = resultPreview.slice(0, 320);
-      } catch {}
-      petSessionTokens.set(rec.petId, (petSessionTokens.get(rec.petId) || 0) + (rec.tokens || 0));
-      break;
-    case 'failed':
-      if (rec.status === 'cancelled') break;
-      rec.status = 'failed'; rec.error = ev.error || ('exit ' + ev.exitCode); rec.elapsedMs = ev.elapsedMs;
-      petSessionTokens.set(rec.petId, (petSessionTokens.get(rec.petId) || 0) + (rec.tokens || 0));
-      break;
-    case 'cancelled': rec.status = 'cancelled'; break;
-  }
-  if (ev.type === 'done') systemNotify(rec.petName || 'Agent', rec.brief + ' · 已完成', 'completion', rec.id);
-  else if (ev.type === 'failed') systemNotify(rec.petName || 'Agent', rec.error || rec.brief, 'error', rec.id);
-  else if (ev.type === 'started') systemNotify(rec.petName || 'Agent', rec.brief + ' · 开始工作', 'detail', rec.id + '-start');
-  persistTask(batch, rec);
-  send('task:event', { ...ev, batchId: batch.id, petId: rec.petId, task: { ...rec, batchId: batch.id, projectName: batch.projectName, projectId: batch.projectId } });
-  checkBatchDone(batch);
+  if (!missionManager.handleTaskEvent(ev)) cfg.log('dispatcher event for unknown task ignored: ' + ev.taskId);
 }
 
 function onBridgeOrder(order) {
@@ -1059,7 +974,7 @@ function onBridgeOrder(order) {
       send('pet:message', { text: String(order.text || '') });
       bridge.writeResult('message-ack', '桌宠已显示消息: ' + order.text, null);
     } else if (order.action === 'status') {
-      const snap = [...batches.values()].slice(-5).map(b => ({ id: b.id, project: b.projectName, task: b.taskText, summaryFile: b.summaryFile || null, tasks: [...b.tasks.values()].map(t => t.petName + ':' + t.status) }));
+      const snap = missionManager.snapshot().slice(0, 5).map(m => ({ id: m.id, project: m.projectName, task: m.objective, status: m.status, tasks: (m.tasks || []).map(t => (t.assigneeName || t.assigneePetId) + ':' + t.status) }));
       bridge.writeResult('status', JSON.stringify(snap, null, 2), null);
     }
   } catch (e) {
@@ -1293,67 +1208,9 @@ function createWindow() {
     win.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         try {
-          const action = captureView === 'diagnostics'
-            ? "(async () => { diagnosticsReport = await window.petOffice.diagnostics(); openPanel('supervisor', 'settings'); const support = document.querySelector('[data-disclosure=settings-support]'); if (support) support.open = true; const page = document.querySelector('#panel .panel-page'); page.scrollTop = support ? Math.max(0, support.offsetTop - 80) : page.scrollHeight; return { items: diagnosticsReport.items, supportOpen: !!(support && support.open), scrollTop: page.scrollTop }; })()"
-            : captureView === 'experience'
-            ? "(() => { S.settings.compactMode = true; S.settings.petScale = 1.2; S.settings.reducedMotion = true; S.shortcutStatus = { ok: true, active: 'Control+Alt+P', fallback: false }; applyAppearanceSettings(); setStatus(pets.get('supervisor'), 'needs_input'); openPanel('supervisor', 'settings'); return { compactMode: S.settings.compactMode, petScale: S.settings.petScale, reducedMotion: S.settings.reducedMotion }; })()"
-            : captureView === 'appearance'
-              ? "(() => { openPanel('supervisor', 'appearance'); const previews = [...document.querySelectorAll('[data-skin-preview]')].map(node => ({ slug: node.dataset.skinPreview, inlineSize: node.style.backgroundSize, imageLength: node.style.backgroundImage.length, imagePrefix: node.style.backgroundImage.slice(0, 28) })); return { cards: document.querySelectorAll('.skin-card').length, selected: document.querySelectorAll('.skin-card.selected').length, discover: document.querySelectorAll('[data-discover-skins]').length, previews }; })()"
-            : captureView === 'appearance-bottom'
-              ? "(async () => { openPanel('supervisor', 'appearance'); await Promise.all((S.skins || []).map(appearancePreviewUrl)); const page = document.querySelector('#panel .panel-page'); page.scrollTop = page.scrollHeight; return { cards: document.querySelectorAll('.skin-card').length, visibleNames: [...document.querySelectorAll('.skin-card b')].map(node => node.textContent), scrollTop: page.scrollTop }; })()"
-            : captureView === 'live-task'
-              ? "(() => { tasks = [{ id: 'live-1', petId: 'supervisor', petName: 'CC', model: null, brief: '优化桌宠任务动态显示', progress: '正在修改任务状态卡并运行回归测试…', progressStage: 'file', status: 'running', threadId: 'test-thread', startedAt: Date.now(), updatedAt: Date.now() }]; updateLiveTaskCard(); return { visible: !document.getElementById('live-task').classList.contains('hidden'), text: document.getElementById('live-task').innerText }; })()"
-            : captureView === 'activity'
-            ? "(() => { interactions = [{ id: 'test-approval', kind: 'approval', title: '命令需要批准', reason: 'Agent 请求运行测试命令', detail: 'npm test -- StatusBadge', threadId: 'test-thread', petId: 'supervisor', createdAt: Date.now() }, { id: 'test-question', kind: 'question', title: 'Agent 正在等你回答', reason: '回答后继续', threadId: 'test-thread', petId: 'w1', createdAt: Date.now(), questions: [{ id: 'scope', header: '测试范围', question: '要运行完整测试还是快速测试？', options: [{ label: '快速测试', description: '更快' }, { label: '完整测试', description: '更全面' }] }] }]; tasks = [{ id: 't1', petId: 'supervisor', petName: 'Michael', model: null, brief: '等待批准后继续修改项目', progress: '准备运行项目测试命令，等待你的确认', progressStage: 'command', status: 'waiting_input', threadId: 'test-thread', startedAt: Date.now() }, { id: 't2', petId: 'w1', petName: '小蓝', model: 'deepseek/deepseek-v4-flash', brief: '核验项目代码和测试结果', progress: '运行命令 · npm test -- --runInBand', progressStage: 'command', status: 'running', threadId: 'test-thread-2', startedAt: Date.now() - 1000 }, { id: 't3', petId: 'w2', petName: '小绿', model: null, brief: '界面优化已完成', progress: '界面与回归测试均已完成', progressStage: 'report', status: 'done', threadId: 'test-thread-3', startedAt: Date.now() - 2000 }]; updateActivityBadge(); openActivity(); return { interactions: interactions.length, tasks: tasks.length }; })()"
-            : captureView === 'ruflo-setup'
-              ? "(() => { showRufloSetup({ checks: { node: { ok: true, value: 'v24.14.1' }, npm: { ok: true, value: '11.11.0' }, network: { ok: true, value: 'npm registry 可访问' }, disk: { ok: true, value: 128849018880 }, runtime: { ok: false, value: { ruflo: null, cli: null } }, mcp: { ok: false, value: '等待安装后检查' } } }, () => {}); return { checks: document.querySelectorAll('.ruflo-check').length, install: !!document.getElementById('ruflo-install') }; })()"
-            : captureView === 'mission-plan'
-              ? "(() => { const plan = { id: 'mission-plan-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-4100', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', memoryHits: [{ key: 'mission-accessible-deliverables', value: '复杂文档任务先核对附件可访问性，再拆分写作与独立复核。', similarity: .91 }], status: 'awaiting_confirmation', tasks: [{ id: 'research', title: '梳理现有架构', brief: '检查当前调度、状态与数据边界，列出需要保持兼容的接口。', assigneePetId: 'w1', assigneeName: '小蓝', model: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol', role: 'researcher', modelReason: '用户已锁定模型，适合长上下文项目分析', dependsOn: [], mode: 'read', wave: 0 }, { id: 'engine', title: '实现 Mission 状态机', brief: '加入持久化、依赖波次、阶段检查与恢复。', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', actualModel: 'deepseek/deepseek-v4-flash', role: 'coder', modelReason: 'Ruflo 按中等复杂度匹配本机可用编码模型', dependsOn: ['research'], mode: 'write', wave: 1 }, { id: 'qa', title: '端到端核验', brief: '验证冲突、取消、恢复与最终回写。', assigneePetId: 'w3', assigneeName: '小橙', model: 'zhipu-bigmodel-coding/glm-5.3', actualModel: 'zhipu-bigmodel-coding/glm-5.3', role: 'reviewer', modelReason: '独立复核使用不同模型降低同源误判', dependsOn: ['engine'], mode: 'verify', wave: 2 }] }; showMissionPlan(plan, '实现真正的主管 Agent', [{ petId: 'w1' }, { petId: 'w2' }, { petId: 'w3' }]); return { nodes: plan.tasks.length }; })()"
-            : captureView === 'mission-needs-input'
-              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-attention-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-attention', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'degraded', error: 'Ruflo MCP 已退出，等待重新连接' }, projectName: 'Pet Office', objective: '整理发布说明并完成 Windows 验证', status: 'needs_input', currentWave: 1, error: 'Ruflo MCP 连接中断；本地状态已保留，修复后可对账恢复。', pendingAction: { kind: 'ruflo_runtime', action: 'repair' }, createdAt: now - 60000, updatedAt: now, memoryHits: [], messages: [{ from: 'system', to: 'supervisor', summary: 'MCP 进程退出，已暂停新任务调度。' }], tasks: [{ id: 'build', title: '生成 Windows portable', brief: '等待 Ruflo 恢复后继续', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 1, attempts: 1, status: 'interrupted', error: '运行时连接中断' }] }]; tasks = [{ id: 'mission-attention-demo:supervisor', missionId: 'mission-attention-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, status: missions[0].status }; })()"
-            : captureView === 'mission-worker-environment'
-              ? "(() => { const now = Date.now(); missions = [{ id: 'mission-environment-demo', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo', projectName: 'Pet Office', objective: '协作完成教学资料并独立核验', status: 'needs_input', currentWave: 0, error: '工作者的 Windows 沙箱初始化失败，文件操作不可用。已暂停自动重试；修复运行环境后可明确重新执行失败节点。', pendingAction: { kind: 'worker_environment', taskIds: ['draft'] }, createdAt: now - 60000, updatedAt: now, tasks: [{ id: 'draft', title: '生成教学讲义', assigneePetId: 'w1', assigneeName: '小蓝', actualModel: 'gpt-5.6-sol', role: 'coder', dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'failed', error: 'helper_unknown_error: apply deny-read ACLs' }, { id: 'verify', title: '独立核验讲义', assigneePetId: 'w2', assigneeName: '小绿', actualModel: 'zhipu-bigmodel-coding/glm-5.3', role: 'reviewer', dependsOn: ['draft'], mode: 'verify', wave: 1, attempts: 0, status: 'blocked' }] }]; tasks = [{ id: 'mission-environment-demo:supervisor', missionId: 'mission-environment-demo', source: 'mission', petId: 'supervisor', petName: '主管', brief: missions[0].objective, progress: missions[0].error, progressStage: 'warning', status: 'waiting_input', startedAt: now - 60000, updatedAt: now }]; openActivity(); const scroll = document.querySelector('.activity-scroll'); if (scroll) scroll.scrollTop = scroll.scrollHeight; return { status: missions[0].status, replayButton: !!document.querySelector('[data-mission-replay]') }; })()"
-            : captureView === 'mission'
-  ? "(() => { const now = Date.now(); missions = [{ id: 'mission-demo', projectName: 'Pet Office', objective: '实现真正的主管 Agent 与安全合并流程', schemaVersion: 2, engine: 'ruflo', rufloVersion: '3.43.0', swarmId: 'swarm-demo-finished', topology: 'hierarchical', consensus: 'raft', memoryNamespace: 'pet-office-project-demo', runtimeHealth: { state: 'ready' }, memoryHits: [{ key: 'safe-apply', value: '复核通过后再回写主项目。' }], messages: [{ from: 'w1', to: 'supervisor', summary: '架构实现完成并通过恢复测试。' }, { from: 'supervisor', to: 'w3', summary: '请独立核验安全回写范围。' }], status: 'partial', currentWave: 2, artifacts: [{ path: 'deliverables/study-guide.md', kind: 'added' }, { path: 'reviews/verification-report.md', kind: 'added' }], supervisorThreadId: 'supervisor-thread', finalReview: { verdict: 'partial', summary: '交付链路已闭合：三个节点全部接受，产出隔离工作区实现与回归报告。存在非致命缺失：外部基准材料不可访问，两项推导只能做自洽性核验，无法与课程原件对齐。', validationSummary: '独立核验完成 SHA256 前后比对与关键路径重算，链接完整性检查全部通过；缺少外部真值是主要局限。', risks: ['来源材料在执行环境中不可访问，建议对照原始课件核对符号约定与侧重。', '自测题中一道答案与独立重算不一致，使用前请先修正。'] }, createdAt: now - 120000, updatedAt: now, tasks: [{ id: 'architecture', title: '建立 Mission 持久化与依赖图', brief: '实现任务数据模型和恢复流程', assigneePetId: 'w1', assigneeName: '小蓝', model: null, dependsOn: [], mode: 'write', wave: 0, attempts: 1, status: 'accepted', review: { reason: '结构和恢复测试通过' } }, { id: 'runtime', title: '隔离工作区与安全回写', brief: '实现 worktree、快照和冲突检测', assigneePetId: 'w2', assigneeName: '小绿', model: 'deepseek/deepseek-v4-flash', dependsOn: ['architecture'], mode: 'write', wave: 1, attempts: 1, status: 'accepted', review: { reason: '工作区变更与交付物一致' } }, { id: 'verify', title: '回归与最终核验', brief: '运行测试并检查状态准确性', assigneePetId: 'w3', assigneeName: '小橙', model: null, dependsOn: ['runtime'], mode: 'verify', wave: 2, attempts: 1, status: 'accepted', review: { reason: '回归与最终核验通过' } }] }]; tasks = [{ id: 'mission-demo:supervisor', missionId: 'mission-demo', source: 'mission', petId: 'supervisor', petName: 'Michael', brief: missions[0].objective, progress: '主管已完成最终复核并生成可读总结', progressStage: 'finishing', status: 'done', threadId: 'supervisor-thread', startedAt: now - 120000, updatedAt: now }]; openActivity(); const demoCard = document.querySelector('.mission-card'); if (demoCard) demoCard.open = true; const missionScroll = document.querySelector('.activity-scroll'); if (missionScroll) missionScroll.scrollTop = missionScroll.scrollHeight; return { missions: missions.length, nodes: missions[0].tasks.length, verdict: missions[0].finalReview.verdict }; })()"
-            : captureView === 'activity-live'
-              ? "openActivity()"
-            : captureView === 'live-task-real'
-              ? "updateLiveTaskCard()"
-            : captureView === 'status-cancelled'
-              ? "(() => { const now = Date.now(); tasks = [{ id: 'd-old', petId: 'supervisor', source: 'desktop', surface: 'Codex 桌面端', brief: '旧完成任务', status: 'done', updatedAt: now - 60000, startedAt: now - 60000 }, { id: 'c-new', petId: 'supervisor', source: 'desktop', surface: 'Codex 桌面端', brief: '被中断的任务', status: 'cancelled', updatedAt: now - 400, startedAt: now - 6000 }]; previousTaskStatuses.set('c-new', 'running'); syncPetTaskStatus(); const boss = pets.get('supervisor'); const sig = boss.el.querySelector('.state-signal'); return { petStatus: boss.status, dataStatus: boss.el.dataset.status || null, signalDisplay: getComputedStyle(sig).display, signalContent: getComputedStyle(sig, '::before').content, dotColor: getComputedStyle(boss.el.querySelector('.tag .dot')).backgroundColor }; })()"
-            : captureView === 'drop-files'
-              ? "(async () => { const probe = await window.petOffice.ingestFiles(['C:/definitely-missing/probe.txt']); openComposer('supervisor', false); composerAttachments = [{ name: '季度报告.pdf', relPath: 'inbox/季度报告.pdf', kind: 'PDF', size: 20480 }, { name: 'photo.png', relPath: 'inbox/photo.png', kind: '图片', size: 102400 }]; renderComposerFiles(); const chips = [...document.querySelectorAll('#c-files .file-chip')]; return { ipcWired: !!(probe && probe.ok === false && probe.error), ipcError: probe ? probe.error : null, composerOpen: !document.getElementById('composer').classList.contains('hidden'), composerPet: composerPetId, chips: chips.length, chipNames: chips.map(node => node.querySelector('b').textContent), chipKinds: chips.map(node => node.querySelector('.attachment-icon').textContent), promptBlock: attachmentPromptBlock() }; })()"
-            : captureView === 'quick-input-v0131'
-              ? "(() => { const pet = pets.get('supervisor'); pet.model = 'deepseek/test-no-vision'; S.models = [...(S.models || []), { slug: pet.model, name: 'DeepSeek Test', provider: 'deepseek', capabilities: { vision: false, speed: 'fast', cost: 'low' } }]; openComposer('supervisor', false); composerAttachments = [{ type: 'file', source: 'capture', name: 'canvas-assignment.png', relPath: 'inbox/screenshots/canvas-assignment.png', kind: '图片', size: 188420, previewDataUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22240%22%3E%3Crect width=%22400%22 height=%22240%22 fill=%22%231e293b%22/%3E%3Crect x=%2222%22 y=%2224%22 width=%22356%22 height=%2240%22 rx=%228%22 fill=%22%23f2a62b%22/%3E%3Crect x=%2222%22 y=%2280%22 width=%22270%22 height=%2212%22 rx=%226%22 fill=%22%2394a3b8%22/%3E%3Crect x=%2222%22 y=%22110%22 width=%22330%22 height=%2212%22 rx=%226%22 fill=%22%2364748b%22/%3E%3C/svg%3E' }, { type: 'link', url: 'https://canvas.example.edu/courses/42/assignments/9', name: 'Week 3 Assignment', domain: 'canvas.example.edu', kind: '链接', size: 0 }]; renderComposerFiles(); document.getElementById('c-text').value = '帮我解释这道作业要求，并列出完成步骤'; return { attachments: composerAttachments.length, quickPrompts: document.querySelectorAll('[data-quick-prompt]').length, warning: document.querySelector('.vision-warning')?.textContent || '', linkHint: document.querySelector('.link-hint')?.textContent || '' }; })()"
-            : captureView === 'dismiss'
-              ? "(() => { const stage = document.getElementById('stage'); openPanel('supervisor'); const panelOpened = !document.getElementById('panel').classList.contains('hidden'); stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 20 })); const panelClosed = document.getElementById('panel').classList.contains('hidden'); openMenu('supervisor', 300, 300); const menuOpened = !document.getElementById('ctxmenu').classList.contains('hidden'); stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 20 })); const menuClosed = document.getElementById('ctxmenu').classList.contains('hidden'); return { panelOpened, panelClosed, menuOpened, menuClosed }; })()"
-            : captureView === 'composer'
-              ? "openComposer('supervisor', true)"
-            : captureView === 'scale-dragtest'
-              ? "(async () => { S.settings.compactMode = false; S.settings.petScale = 1.4; S.settings.reducedMotion = false; applyAppearanceSettings(); const el = document.getElementById('pet-supervisor'); const r0 = el.getBoundingClientRect(); const pos = (x, y) => ({ pointerId: 8, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y, bubbles: true, cancelable: true }); const x0 = r0.left + 40; const y0 = r0.top + 40; el.dispatchEvent(new PointerEvent('pointerdown', pos(x0, y0))); document.dispatchEvent(new PointerEvent('pointermove', pos(x0 - 180, y0 - 120))); document.dispatchEvent(new PointerEvent('pointerup', pos(x0 - 180, y0 - 120))); await new Promise(r => setTimeout(r, 700)); const r1 = el.getBoundingClientRect(); return { scale: getComputedStyle(document.documentElement).getPropertyValue('--pet-scale').trim(), movedBy: Math.round(r1.left - r0.left) + ',' + Math.round(r1.top - r0.top), stored: (S.ui.petPositions || {}).supervisor || null, stillDragging: el.classList.contains('dragging') }; })()"
-            : captureView === 'dragtest'
-              ? "(async () => { const el = document.getElementById('pet-supervisor'); const r0 = el.getBoundingClientRect(); const pos = (x, y) => ({ pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y, bubbles: true, cancelable: true }); const x0 = r0.left + 40; const y0 = r0.top + 40; el.dispatchEvent(new PointerEvent('pointerdown', pos(x0, y0))); document.dispatchEvent(new PointerEvent('pointermove', pos(x0 - 260, y0 - 160))); document.dispatchEvent(new PointerEvent('pointermove', pos(x0 - 420, y0 - 250))); document.dispatchEvent(new PointerEvent('pointerup', pos(x0 - 420, y0 - 250))); await new Promise(r => setTimeout(r, 700)); const r1 = el.getBoundingClientRect(); return { movedBy: Math.round(r1.left - r0.left) + ',' + Math.round(r1.top - r0.top), stored: (S.ui.petPositions || {}).supervisor || null, stillDragging: el.classList.contains('dragging') }; })()"
-              : captureView === 'boba-composer'
-                ? "(() => { const s = (S.skins || []).find(x => x.slug === 'boba'); if (s) { const p = pets.get('supervisor'); p.skin = s.slug; applySkin(p); } openComposer('supervisor', false); })()"
-            : captureView === 'morph'
-                ? "(async () => { const button = document.querySelector('#pet-supervisor [data-quick-chat]'); const before = button.getBoundingClientRect(); openComposer('supervisor', false); const composer = document.getElementById('composer'); const start = composer.getBoundingClientRect(); await new Promise(r => setTimeout(r, 420)); const settled = composer.getBoundingClientRect(); const rect = r => [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; return { button: rect(before), start: rect(start), settled: rect(settled), className: composer.className }; })()"
-            : captureView === 'poses'
-                ? "(async () => { const boss = document.getElementById('pet-supervisor'); const sprite = boss.querySelector('.skin-sprite'); const wait = ms => new Promise(r => setTimeout(r, ms)); const row = () => sprite.style.backgroundPositionY; const out = {}; boss.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false })); await wait(260); out.hover = row(); boss.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false })); await wait(260); out.idle = row(); setStatus(pets.get('supervisor'), 'queued'); await wait(260); out.queued = row(); setStatus(pets.get('supervisor'), 'working'); await wait(260); out.working = row(); setStatus(pets.get('supervisor'), 'done'); await wait(260); out.celebrate = row(); await wait(2800); out.review = row(); setStatus(pets.get('supervisor'), 'failed'); await wait(260); out.failed = row(); setStatus(pets.get('supervisor'), 'idle'); await wait(200); walkTo(pets.get('supervisor'), innerWidth - 300, 200); await wait(260); out.runLeft = row(); return out; })()"
-            : captureView === 'project-v012'
-              ? "(async () => { openPanel('supervisor', 'work'); await new Promise(r => setTimeout(r, 450)); return { project: currentProject() && currentProject().name, sessions: document.querySelectorAll('.session-row').length, archived: document.querySelectorAll('[data-restore-project]').length }; })()"
-            : captureView === 'recommend-v012'
-              ? "(async () => { openComposer('supervisor', true, '请快速实现桌宠界面代码，并审查测试结果和截图'); await new Promise(r => setTimeout(r, 500)); await applyAgentRecommendation(); return { selected: [...document.querySelectorAll('[data-pet]:checked')].map(x => x.dataset.pet), note: document.getElementById('c-recommendation-note').innerText }; })()"
-            : captureView === 'team'
-              ? "openPanel('supervisor', 'team')"
-              : captureView === 'theme-system'
-                ? "(() => { S.settings.themeMode = 'system'; applyAppearanceSettings(); openPanel('supervisor', 'overview'); return { theme: document.body.dataset.theme, dark: document.body.classList.contains('theme-dark'), primaryActions: document.querySelectorAll('.overview-primary').length }; })()"
-              : captureView === 'theme-dark'
-                ? "(() => { S.settings.themeMode = 'dark'; applyAppearanceSettings(); openPanel('supervisor', 'overview'); return { theme: document.body.dataset.theme, dark: document.body.classList.contains('theme-dark'), primaryActions: document.querySelectorAll('.overview-primary').length }; })()"
-              : captureView === 'deepseek'
-                ? "(() => { const m = (S.models || []).find(x => x.provider === 'deepseek' || x.slug.startsWith('deepseek/')); if (m) pets.get('supervisor').model = m.slug; openPanel('supervisor'); })()"
-              : "openPanel('supervisor')";
+          const action = captureScript(captureView);
           const actionResult = await win.webContents.executeJavaScript(action);
-          const captureState = await win.webContents.executeJavaScript("(() => { const c = document.getElementById('composer'); const r = c.getBoundingClientRect(); const boss = document.getElementById('pet-supervisor'); const b = boss.getBoundingClientRect(); const sprite = boss.querySelector('.skin-sprite'); const list = (S && S.skins) || []; const grids = typeof skinGrids !== 'undefined' ? [...skinGrids.entries()] : null; const pill = c.querySelector('.composer-input-row'); const pr = pill ? pill.getBoundingClientRect() : null; const lc = document.getElementById('live-task'); const allTasks = typeof tasks !== 'undefined' ? tasks : []; return { panel: !document.getElementById('panel').classList.contains('hidden'), activity: !document.getElementById('activity').classList.contains('hidden'), activityState: typeof activitySurface !== 'undefined' ? activitySurface.state : null, activityInteractions: document.querySelectorAll('.interaction-card').length, activityTasks: document.querySelectorAll('.activity-task').length, missionCards: document.querySelectorAll('.mission-card').length, missionNodes: document.querySelectorAll('.mission-node').length, composer: !c.classList.contains('hidden'), composerClass: c.className, pets: document.querySelectorAll('.pet').length, skins: list.length, skinNames: list.map(s => s.slug), grids, skinApplied: boss.classList.contains('petdex-skin'), compactMode: document.body.classList.contains('compact-mode'), reducedMotion: document.body.classList.contains('reduce-motion'), petScale: getComputedStyle(document.documentElement).getPropertyValue('--pet-scale').trim(), stateSignal: getComputedStyle(boss.querySelector('.state-signal')).display, quickBarVisible: getComputedStyle(boss.querySelector('.quickbar')).opacity, quickButtons: boss.querySelectorAll('.quick-btn').length, liveTask: { visible: !lc.classList.contains('hidden'), text: lc.innerText, threadId: lc.dataset.threadId || null }, desktopMonitor: (S && S.desktopMonitor) || null, taskCount: allTasks.length, activeTasks: allTasks.filter(t => ['running', 'queued', 'waiting_input'].includes(t.status)).map(t => ({ source: t.source, threadId: t.threadId, status: t.status, brief: t.brief, progress: t.progress, model: t.model })), spriteAnimations: sprite.getAnimations().map(animation => ({ playState: animation.playState, iterations: animation.effect && animation.effect.getTiming ? animation.effect.getTiming().iterations : null })), spriteSize: sprite.style.backgroundSize, spriteRow: sprite.style.backgroundPositionY, composerBox: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], pillBox: pr ? [Math.round(pr.left), Math.round(pr.top), Math.round(pr.width), Math.round(pr.height)] : null, petBox: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)] }; })()");
+          const captureState = await win.webContents.executeJavaScript(CAPTURE_STATE_SCRIPT);
           cfg.log('capture-ui action: ' + JSON.stringify(actionResult || null));
           cfg.log('capture-ui state: ' + JSON.stringify(captureState));
           try { fs.writeFileSync(capturePath.replace(/\.png$/i, '.state.json'), JSON.stringify({ action: actionResult || null, state: captureState }, null, 2)); } catch {}
@@ -1437,26 +1294,12 @@ function knownPetThreadIds() {
     for (const threadId of project.threadIds || []) if (threadId) ids.add(threadId);
   }
   for (const task of state.history || []) if (task.threadId) ids.add(task.threadId);
-  for (const batch of batches.values()) {
-    for (const task of batch.tasks.values()) if (task.threadId) ids.add(task.threadId);
-  }
   for (const id of missionManager.threadIds()) ids.add(id);
   return ids;
 }
 
 function activeTasksSnapshot() {
   const merged = new Map((state.history || []).map(task => [task.id, { ...task, source: localTaskSource(task) }]));
-  for (const b of batches.values()) {
-    for (const task of b.tasks.values()) {
-      merged.set(task.id, {
-        ...task,
-        source: 'delegation',
-        batchId: b.id,
-        projectName: b.projectName,
-        projectId: b.projectId,
-      });
-    }
-  }
   for (const task of missionManager.taskSnapshots()) merged.set(task.id, task);
   for (const task of desktopMonitor.snapshot(knownPetThreadIds())) merged.set(task.id, task);
   return [...merged.values()]

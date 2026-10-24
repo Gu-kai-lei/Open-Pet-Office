@@ -4,7 +4,8 @@ const os = require('os');
 const fs = require('fs');
 
 const HOME = os.homedir();
-const APP_DIR = path.join(HOME, '.pet-office');
+// PET_OFFICE_HOME isolates development and test runs from the installed app.
+const APP_DIR = process.env.PET_OFFICE_HOME ? path.resolve(process.env.PET_OFFICE_HOME) : path.join(HOME, '.pet-office');
 const DIRS = {
   app: APP_DIR,
   logs: path.join(APP_DIR, 'logs'),
@@ -24,7 +25,8 @@ const DIRS = {
   projectsRoot: path.join(HOME, 'Documents', 'PetOffice', 'projects'),
   petdexPets: path.join(HOME, '.petdex', 'pets'),
 };
-const CODEX_HOME = path.join(HOME, '.codex');
+// Codex itself honours CODEX_HOME; the session monitor must watch the same place.
+const CODEX_HOME = process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(HOME, '.codex');
 const CATALOG_FILE = path.join(CODEX_HOME, 'opencodex-catalog.json');
 const OPENCODEX_HOME = path.join(HOME, '.opencodex');
 const ADMIN_TOKEN_FILE = path.join(OPENCODEX_HOME, 'admin-api-token');

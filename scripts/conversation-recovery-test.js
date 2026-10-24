@@ -14,7 +14,7 @@ function fixture(saved = true) {
     activeProject: () => project,
     petRoster: () => [{ id: 'supervisor', name: 'test', model: 'test-model' }],
     petSessionTokens: new Map(),
-    dispatcher: { ensureProjectDirs() {} },
+    dispatcher: {},
     petThreads: new Map(saved ? [['p1:supervisor', 'saved-thread']] : []),
     loadedThreads: new Set(), startingChats: new Set(), liveChats: new Map(),
     appServerIdleTimer: null, clearTimeout() {}, scheduleAppServerIdleStop() {},

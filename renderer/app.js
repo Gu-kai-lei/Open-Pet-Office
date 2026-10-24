@@ -480,34 +480,6 @@ function bindEvents() {
     updateActivityBadge();
     if (activitySurface.state !== 'closed') refreshActivityContents();
   });
-  window.petOffice.on('batch:update', data => {
-    const planningId = 'planning-' + data.batchId;
-    if (data.phase === 'planning') {
-      upsertTask({
-        id: planningId, batchId: data.batchId, petId: 'supervisor', petName: pets.get('supervisor').name,
-        projectId: data.projectId, projectName: data.projectName, brief: data.taskText || '正在规划分工任务',
-        progress: '主管正在分析任务并拆分工作…', progressStage: 'thinking', status: 'running',
-        kind: 'planning', startedAt: Date.now(), updatedAt: Date.now(),
-      });
-    } else {
-      tasks = tasks.filter(task => task.id !== planningId);
-    }
-    if (Array.isArray(data.tasks)) data.tasks.forEach(upsertTask);
-    if (data.phase === 'planning') bubble('supervisor', '正在分析任务、拆分简报…', 12000);
-    if (data.phase === 'running') {
-      const ids = (data.tasks || []).map(task => task.petId).filter(id => id !== 'supervisor');
-      summonWorkers(ids, false);
-      bubble('supervisor', '任务已分发，团队开工！', 5000);
-    }
-    updateLiveTaskCard();
-    if (activitySurface.state !== 'closed') refreshActivityContents();
-    if (data.phase !== 'planning') refreshState();
-  });
-  window.petOffice.on('batch:done', () => {
-    bubble('supervisor', '✔ 团队结果已汇总', 10000);
-    refreshState();
-    setTimeout(restoreWorkerVisibility, 6000);
-  });
   window.petOffice.on('quota:update', quotas => {
     S.quotas = quotas;
     if (openPanelFor && panelTabs.get(openPanelFor) === 'overview') refreshOpenPanelForLiveState();

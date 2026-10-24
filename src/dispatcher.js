@@ -16,14 +16,6 @@ let emit = () => {};
 function setConcurrency(n) { maxParallel = Math.max(1, n | 0 || 5); pump(); }
 function setEmitter(fn) { emit = fn; }
 
-function ensureProjectDirs(projectDir) {
-  for (const sub of ['tasks', 'messages']) fs.mkdirSync(path.join(projectDir, sub), { recursive: true });
-  const hive = path.join(projectDir, 'HIVE.md');
-  if (!fs.existsSync(hive)) fs.writeFileSync(hive, '# Hive Board\n\n_共享计划与约定。每个 agent 开始任务前先读这里，完成后把对团队有用的结论追加到 MEMORY.md。_\n', 'utf8');
-  const mem = path.join(projectDir, 'MEMORY.md');
-  if (!fs.existsSync(mem)) fs.writeFileSync(mem, '# MEMORY\n\n_团队共享记忆：重要结论、约定、进度。按时间倒序追加，一行一条。_\n', 'utf8');
-}
-
 function startTask(task) {
   queue.push(task);
   emit({ type: 'queued', taskId: task.id });
@@ -42,17 +34,15 @@ function pump() {
 function run(t) {
   return new Promise(resolve => {
     try {
-      if (!t.skipLegacyDirs) ensureProjectDirs(t.projectDir);
-      else fs.mkdirSync(t.projectDir, { recursive: true });
+      fs.mkdirSync(t.projectDir, { recursive: true });
     } catch (e) {
       emit({ type: 'failed', taskId: t.id, exitCode: -1, error: '项目目录创建失败: ' + e.message });
       return resolve();
     }
     const briefPath = t.briefPath || path.join(t.projectDir, 'tasks', t.id + '.brief.md');
     const outPath = t.resultPath || path.join(t.projectDir, 'tasks', t.id + '.result.md');
-    const brief = t.missionId
-      ? (t.brief || '(无简报)') + '\n\n---\nMission 工作约定：\n- 只能在当前隔离工作区内工作。\n- 不要修改 .pet-office 目录。\n- 遵守简报中的文件范围、交付物和验证要求。\n- 最终输出必须符合系统提供的 JSON Schema。\n'
-      : (t.brief || '(无简报)') + '\n\n---\n工作约定：\n- 先读 HIVE.md 与 MEMORY.md，遵守其中约定。\n- 需要修改项目时直接在共享工作区完成。\n- 最终回复必须包含完整结果或工作报告；系统会自动保存为 tasks/' + t.id + '.result.md。\n- 有对团队有用的结论时，追加到 MEMORY.md。\n';
+    // Workers only ever run inside a Mission's isolated workspace.
+    const brief = (t.brief || '(无简报)') + '\n\n---\nMission 工作约定：\n- 只能在当前隔离工作区内工作。\n- 不要修改 .pet-office 目录。\n- 遵守简报中的文件范围、交付物和验证要求。\n- 最终输出必须符合系统提供的 JSON Schema。\n';
     fs.mkdirSync(path.dirname(briefPath), { recursive: true });
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     try { fs.writeFileSync(briefPath, brief, 'utf8'); } catch (e) {
@@ -285,7 +275,6 @@ module.exports = {
   shutdown,
   setConcurrency,
   setEmitter,
-  ensureProjectDirs,
   snapshot,
   _internals: { findTotalTokens, readSessionTokens, progressFromEvent, oneLine },
 };

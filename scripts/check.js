@@ -32,6 +32,7 @@ const files = [
   'src/local-coordinator.js',
   'src/coordination-utils.js',
   'src/ipc-guards.js',
+  'src/capture-views.js',
   'src/main.js',
   'src/preload.js',
   'renderer/app.js',

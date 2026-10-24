@@ -76,51 +76,6 @@ function stopChild(child) {
   try { child.kill(); } catch {}
 }
 
-// 让主管模型把任务拆成 N 份简报。成功返回 [{name, brief}]，失败返回 null。
-function splitTask({ projectDir, text, participants }) {
-  return new Promise(resolve => {
-    const stamp = 'plan-' + Date.now().toString(36);
-    const reqPath = path.join(projectDir, 'tasks', stamp + '.request.md');
-    const outPath = path.join(projectDir, 'tasks', stamp + '.plan.txt');
-    const inst = [
-      '你是团队主管。下面是一个任务和参与者名单。',
-      '参与者: ' + participants.join(', '),
-      '请把任务拆分成与参与者一一对应的简报（每人一份，具体、可执行；如果某人本任务确实无事可做，brief 给一句简短说明）。',
-      '严格输出一个 JSON 数组，不要输出任何其他文字。格式:',
-      '[{"name":"<参与者名>","brief":"<该成员的具体任务简报，中文>"}]',
-      '',
-      '# 任务',
-      String(text || ''),
-    ].join('\n');
-    try { fs.writeFileSync(reqPath, inst, 'utf8'); } catch (e) { log('planner write: ' + e.message); return resolve(null); }
-    // cmd.exe truncates arguments at the first newline, so instructions are
-    // always piped through stdin instead of the command line.
-    const instruction = 'Read ' + stamp + '.request.md in the tasks folder and follow its instructions exactly. Your entire final output must be only the JSON array it specifies.';
-    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs(), '--json', '--skip-git-repo-check', '-C', projectDir, '--sandbox', 'read-only', '-o', outPath, '-'];
-    let child;
-    try {
-      child = spawn('cmd.exe', args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
-      child.stdin.on('error', () => {});
-      child.stdin.write(instruction, 'utf8');
-      child.stdin.end();
-    } catch (e) { return resolve(null); }
-    running.add(child);
-    const timer = setTimeout(() => stopChild(child), 180000);
-    child.on('exit', () => {
-      running.delete(child);
-      clearTimeout(timer);
-      try {
-        const raw = fs.readFileSync(outPath, 'utf8');
-        const m = raw.match(/\[[\s\S]*\]/);
-        const arr = JSON.parse(m[0]);
-        if (Array.isArray(arr) && arr.length) return resolve(arr.filter(x => x && x.name && typeof x.brief === 'string'));
-      } catch {}
-      resolve(null);
-    });
-    child.on('error', () => { running.delete(child); clearTimeout(timer); resolve(null); });
-  });
-}
-
 function threadIdFromEvent(obj) {
   return obj && (obj.thread_id || obj.session_id || (obj.thread && obj.thread.id) || (obj.msg && (obj.msg.thread_id || obj.msg.id)));
 }
@@ -346,4 +301,4 @@ function shutdown() {
   running.clear();
 }
 
-module.exports = { splitTask, planMission, reviewWave, finalReview, presentFinal, runStructured, runSupervisorStructured, recoverableSupervisorThreadError, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: { errorFromEvent, compactError } };
+module.exports = { planMission, reviewWave, finalReview, presentFinal, runStructured, runSupervisorStructured, recoverableSupervisorThreadError, parseStructuredOutput, shutdown, PLAN_SCHEMA, REVIEW_SCHEMA, FINAL_SCHEMA, _internals: { errorFromEvent, compactError } };
