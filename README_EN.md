@@ -3,7 +3,7 @@
 
 # Open Pet Office
 
-### A Codex companion you can see
+### A Codex desktop pet you can see
 
 One supervisor pet lives on your desktop: live Codex tasks, one inbox for approvals and questions, and screenshots or files you can just drop in.<br>
 When a job needs a team, turn on Delegation to run up to four workers in isolated workspaces, reviewed before anything is written back.
