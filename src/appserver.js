@@ -5,6 +5,7 @@
 const { spawn } = require('child_process');
 const cfg = require('./config');
 const { httpProviderArgs } = require('./codex-transport');
+const { codexCommand } = require('./codex-launcher');
 
 // Codex Desktop only shows locally-created conversations in its normal task list
 // when they carry the desktop client's originator. Pet Office behaves as a
@@ -41,14 +42,10 @@ class AppServerClient {
     this.closed = false;
     this.lastStartedAt = Date.now();
     this.buffer = '';
-    const command = process.platform === 'win32' ? 'cmd.exe' : 'codex';
-    const transportArgs = httpProviderArgs();
-    const args = process.platform === 'win32'
-      ? ['/d', '/s', '/c', 'codex', 'app-server', ...transportArgs, '--listen', 'stdio://']
-      : ['app-server', ...transportArgs, '--listen', 'stdio://'];
+    const launch = codexCommand(['app-server', ...httpProviderArgs(), '--listen', 'stdio://']);
     let child;
     try {
-      child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+      child = spawn(launch.command, launch.args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
     } catch (error) {
       this.lastError = error.message;
       return Promise.reject(error);

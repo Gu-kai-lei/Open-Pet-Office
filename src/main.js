@@ -22,7 +22,7 @@ const { LocalCoordinator } = require('./local-coordinator');
 const { hydrateProject, clearProjectInbox } = require('./project-service');
 const { recommendAgents } = require('./recommender');
 const releaseManager = require('./release-manager');
-const { isFullscreenBounds, probeForegroundWindow } = require('./fullscreen-probe');
+const { isFullscreenBounds, probeForegroundWindow, stopForegroundProbe } = require('./fullscreen-probe');
 const { normalizeDroppedLinks } = require('./link-utils');
 const { RENDERER_SETTINGS, RENDERER_UI, pickKeys, delegationEngine } = require('./ipc-guards');
 
@@ -272,7 +272,7 @@ function configureFullscreenMonitor() {
   clearInterval(fullscreenTimer);
   fullscreenTimer = null;
   applyFullscreenState(false);
-  if ((state.settings.fullscreenBehavior || 'corner') === 'ignore') return;
+  if ((state.settings.fullscreenBehavior || 'corner') === 'ignore') { stopForegroundProbe(); return; }
   pollFullscreen();
   fullscreenTimer = setInterval(pollFullscreen, 6000);
   if (fullscreenTimer.unref) fullscreenTimer.unref();
@@ -1411,6 +1411,7 @@ app.on('second-instance', () => setWindowVisible(true));
 app.on('before-quit', () => {
   isQuitting = true;
   clearInterval(fullscreenTimer);
+  try { stopForegroundProbe(); } catch {}
   try { desktopMonitor.stop(); } catch {}
   try { appServer.stop(); } catch {}
   try { missionManager.shutdown(); } catch {}

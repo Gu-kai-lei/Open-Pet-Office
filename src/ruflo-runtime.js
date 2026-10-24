@@ -39,6 +39,19 @@ function checksRuntimeInstalled(versions) {
   return !!versions && versions.ruflo === RUFLO_VERSION && versions.cli === RUFLO_CLI_VERSION;
 }
 
+// health() runs on the Electron main thread; spawnSync of npm.cmd can take a
+// second or more, so tool versions are cached for the session.
+const versionCache = new Map();
+const VERSION_TTL_MS = 10 * 60 * 1000;
+function cachedCommandVersion(command, args) {
+  const key = command + ' ' + args.join(' ');
+  const hit = versionCache.get(key);
+  if (hit && hit.ok && Date.now() - hit.at < VERSION_TTL_MS) return hit.value;
+  const value = commandVersion(command, args);
+  versionCache.set(key, { at: Date.now(), ok: value.ok, value });
+  return value;
+}
+
 function commandVersion(command, args) {
   const useCmd = process.platform === 'win32' && /\.cmd$/i.test(command);
   const result = spawnSync(useCmd ? (process.env.ComSpec || 'cmd.exe') : command, useCmd ? ['/d', '/s', '/c', command, ...args] : args, { encoding: 'utf8', windowsHide: true, timeout: 15000 });
@@ -292,8 +305,8 @@ class RufloRuntimeManager {
 
   async health(projectId = null, { probe = false } = {}) {
     this.ensureDirs();
-    const node = commandVersion('node.exe', ['--version']);
-    const npm = commandVersion('npm.cmd', ['--version']);
+    const node = cachedCommandVersion('node.exe', ['--version']);
+    const npm = cachedCommandVersion('npm.cmd', ['--version']);
     const versions = this.installedVersions();
     let freeBytes = null;
     try { freeBytes = fs.statfsSync(this.root).bavail * fs.statfsSync(this.root).bsize; } catch {}

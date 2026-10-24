@@ -4,6 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { log } = require('./config');
 const { httpProviderArgs } = require('./codex-transport');
+const { codexCommand } = require('./codex-launcher');
 const running = new Set();
 
 const PLAN_SCHEMA = {
@@ -162,7 +163,7 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     fs.writeFileSync(promptPath, prompt, 'utf8');
     if (!plain) fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), 'utf8');
     const instruction = plain ? prompt : prompt + '\n\nReturn only the JSON object required by the output schema.';
-    const args = ['/d', '/s', '/c', 'codex', 'exec'];
+    const args = ['exec'];
     if (workerSandbox === 'unelevated') args.push('-c', 'windows.sandbox="unelevated"');
     if (threadId) {
       // `codex exec resume` does not expose --sandbox, so force the equivalent
@@ -180,7 +181,8 @@ function runStructured({ projectDir, missionDir, kind, prompt, schema, model, th
     }
     let child;
     try {
-      child = spawn('cmd.exe', args, { cwd: projectDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      const launch = codexCommand(args);
+      child = spawn(launch.command, launch.args, { cwd: projectDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       // The full prompt is piped via stdin: cmd.exe would otherwise cut it at
       // the first newline, so the multi-line plan prompt reached codex as only
       // its first heading. That is why planning failed with no parseable JSON

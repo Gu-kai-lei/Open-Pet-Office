@@ -52,6 +52,7 @@ function clientFixture() {
   const context = { module: { exports: {} }, require: name => {
     if (name === 'child_process') return { spawn };
     if (name === './codex-transport') return { httpProviderArgs: () => [] };
+    if (name === './codex-launcher') return { codexCommand: args => ({ command: 'codex', args }) };
     return { log: noop };
   },
     process: { platform: 'win32', env: {} }, setTimeout, clearTimeout };
@@ -259,6 +260,7 @@ function clientFixture() {
     const context = { module: { exports: {} }, require: name => name === 'child_process' ? { spawn: fakeSpawn }
       : name === './config' ? { log: noop }
       : name === './codex-transport' ? { httpProviderArgs: () => [] }
+      : name === './codex-launcher' ? { codexCommand: args => ({ command: 'codex', args }) }
       : require(name),
     process: { platform: 'win32' }, setTimeout, clearTimeout, Buffer };
     vm.runInNewContext(read('src/planner.js'), context);

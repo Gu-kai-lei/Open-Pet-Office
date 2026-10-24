@@ -3,6 +3,7 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { CATALOG_FILE, ADMIN_TOKEN_FILE, PROXY_BASE, CODEX_HOME } = require('./config');
+const { codexCommand } = require('./codex-launcher');
 
 function safeText(value, limit = 220) {
   return String(value || '')
@@ -19,9 +20,8 @@ function commandVersion(timeoutMs = 5000) {
   return new Promise(resolve => {
     let child;
     try {
-      child = process.platform === 'win32'
-        ? spawn('cmd.exe', ['/d', '/s', '/c', 'codex --version'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-        : spawn('codex', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const launch = codexCommand(['--version']);
+      child = spawn(launch.command, launch.args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       resolve({ ok: false, detail: safeText(error.message) });
       return;

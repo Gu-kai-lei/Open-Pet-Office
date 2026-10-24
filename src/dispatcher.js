@@ -5,6 +5,7 @@ const fs = require('fs');
 const { _internals: { redact } } = require('./session-monitor');
 const { log, CODEX_HOME } = require('./config');
 const { httpProviderArgs } = require('./codex-transport');
+const { codexCommand } = require('./codex-launcher');
 
 const running = new Map();
 let queue = [];
@@ -59,7 +60,7 @@ function run(t) {
       return resolve();
     }
     const prompt = t.prompt || ('Read ' + JSON.stringify(briefPath) + ' and complete the task it describes. Make any requested workspace changes, then put the complete result or work report in your final response. Do not reply with only DONE; the final response is automatically saved as the result file.');
-    const args = ['/d', '/s', '/c', 'codex', 'exec', ...httpProviderArgs()];
+    const args = ['exec', ...httpProviderArgs()];
     // Windows restricted-token mode is an explicit per-Mission recovery choice.
     // Keep workspace-write and the user's global Codex configuration unchanged.
     if (t.workerSandbox === 'unelevated') args.push('-c', 'windows.sandbox="unelevated"');
@@ -85,7 +86,8 @@ function run(t) {
     const startedAt = Date.now();
     let child;
     try {
-      child = spawn('cmd.exe', args, {
+      const launch = codexCommand(args);
+      child = spawn(launch.command, launch.args, {
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...((t.rufloMcp && t.rufloMcp.env) || {}) },

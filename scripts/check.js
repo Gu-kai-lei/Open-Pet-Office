@@ -28,6 +28,7 @@ const files = [
   'src/fullscreen-probe.js',
   'src/link-utils.js',
   'src/codex-transport.js',
+  'src/codex-launcher.js',
   'src/local-coordinator.js',
   'src/coordination-utils.js',
   'src/ipc-guards.js',
@@ -60,6 +61,8 @@ const files = [
   'scripts/security-test.js',
   'scripts/isolation-test.js',
   'scripts/local-engine-test.js',
+  'scripts/launcher-test.js',
+  'scripts/probe-test.js',
 ];
 
 let failed = false;
