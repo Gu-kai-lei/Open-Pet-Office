@@ -21,6 +21,19 @@ function runGit(cwd, args) {
   return { ok: result.status === 0, stdout: String(result.stdout || '').trim(), stderr: String(result.stderr || '').trim() };
 }
 
+// git prints the canonical long path; the stored project path may use an 8.3
+// short name (e.g. RUNNER~1 on CI), another letter case or a junction.
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); } catch { return resolved; }
+}
+
+function samePath(a, b) {
+  const left = canonicalPath(a);
+  const right = canonicalPath(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 function skippedPath(rel) {
   return rel.split('/').some(part => SKIP_DIRS.has(part));
 }
@@ -71,7 +84,7 @@ function walkCandidates(root, current = root, output = []) {
 function isOwnRepository(root) {
   if (!fs.existsSync(path.join(root, '.git'))) return false;
   const top = runGit(root, ['rev-parse', '--show-toplevel']);
-  return top.ok && path.resolve(top.stdout) === path.resolve(root);
+  return top.ok && samePath(top.stdout, root);
 }
 
 // Files that belong to the visible project state: tracked plus untracked files
@@ -203,7 +216,7 @@ class MissionWorkspace {
 
   inspect(projectPath) {
     const top = runGit(projectPath, ['rev-parse', '--show-toplevel']);
-    const isGit = top.ok && path.resolve(top.stdout) === path.resolve(projectPath);
+    const isGit = top.ok && samePath(top.stdout, projectPath);
     const status = isGit ? runGit(projectPath, ['status', '--porcelain=v1', '--untracked-files=all']) : { ok: false, stdout: '' };
     const relevantStatus = String(status.stdout || '').split(/\r?\n/).filter(line => {
       const file = line.slice(3).replace(/^"|"$/g, '').replace(/\\/g, '/');

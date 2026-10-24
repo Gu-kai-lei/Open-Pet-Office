@@ -25,6 +25,7 @@
 - 协调器状态镜像失败不再让已通过复核的 Mission 整体失败。
 - 与桌宠对话不再在项目中创建 `HIVE.md`、`MEMORY.md`、`tasks/`、`messages/`。
 - 遵循 `CODEX_HOME` 环境变量。
+- 项目路径与 git 输出的写法不同（大小写、8.3 短名、junction）时，干净的 Git 仓库不再被误判为非 Git 项目而退回整份快照；这也是 CI 自 v0.15.1 起持续失败的原因。
 
 ### Removed
 

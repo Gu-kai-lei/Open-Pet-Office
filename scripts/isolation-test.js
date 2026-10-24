@@ -51,6 +51,20 @@ try {
   const changes = workspace.collect(mission, task, path.join(root, 'artifacts')).changes.map(change => change.path);
   assert.deepEqual(changes, ['report.md'], 'ignored worker output is not collected as a deliverable');
 
+  // A clean repository is recognised however its path is spelled: git prints
+  // the canonical long path, while projects may be stored with another letter
+  // case or an 8.3 short name (GitHub runners use C:\Users\RUNNER~1).
+  if (process.platform === 'win32') {
+    assert.equal(git(['stash', '--include-untracked', '--quiet']).status, 0);
+    assert.equal(workspace.inspect(repo.toLowerCase()).kind, 'git-worktree', 'letter case must not hide a Git repository');
+    const shortPath = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+      '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($args[0]).ShortPath', repo], { encoding: 'utf8', windowsHide: true }).stdout.trim();
+    if (shortPath && shortPath.toLowerCase() !== repo.toLowerCase()) {
+      assert.equal(workspace.inspect(shortPath).kind, 'git-worktree', '8.3 short paths must not hide a Git repository');
+    }
+    assert.equal(git(['stash', 'pop', '--quiet']).status, 0);
+  }
+
   // Non-Git projects honour a root .gitignore and the built-in skip list.
   const plain = path.join(root, 'plain');
   write(path.join(plain, 'main.c'), 'int main(void) { return 0; }\n');
