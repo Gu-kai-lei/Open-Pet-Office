@@ -14,6 +14,7 @@ const DIRS = {
   fromPets: path.join(APP_DIR, 'bridge', 'from-pets'),
   processed: path.join(APP_DIR, 'bridge', 'to-pets', 'processed'),
   runtime: path.join(APP_DIR, 'runtime'),
+  memory: path.join(APP_DIR, 'memory'),
   ruflo: path.join(APP_DIR, 'ruflo'),
   rufloRuntime: path.join(APP_DIR, 'ruflo', 'runtime'),
   rufloProjects: path.join(APP_DIR, 'ruflo', 'projects'),
@@ -61,7 +62,8 @@ const DEFAULT_STATE = {
     fontScale: 1,
     fontFamily: 'system',
     autoCheckUpdates: true,
-    rufloDelegation: true,
+    // 'local' needs nothing beyond Codex; 'ruflo' is the optional npm runtime.
+    delegationEngine: 'local',
   },
   ui: {
     delegationOn: false,

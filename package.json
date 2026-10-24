@@ -27,7 +27,7 @@
   "scripts": {
     "start": "electron .",
     "check": "node scripts/check.js",
-    "test": "npm run check && node scripts/session-monitor-test.js && node scripts/activity-state-test.js && node scripts/inbox-test.js && node scripts/conversation-recovery-test.js && node scripts/appserver-progress-test.js && node scripts/stability-test.js && node scripts/ruflo-adapter-test.js && node scripts/mission-test.js && node scripts/v012-test.js && node scripts/v013-test.js && node scripts/v0131-test.js && node scripts/v0132-test.js && node scripts/v0133-test.js && node scripts/reliability-test.js && node scripts/workspace-ui-test.js && node scripts/prompt-pipe-test.js && node scripts/transport-test.js && node scripts/security-test.js && node scripts/isolation-test.js",
+    "test": "npm run check && node scripts/session-monitor-test.js && node scripts/activity-state-test.js && node scripts/inbox-test.js && node scripts/conversation-recovery-test.js && node scripts/appserver-progress-test.js && node scripts/stability-test.js && node scripts/ruflo-adapter-test.js && node scripts/mission-test.js && node scripts/v012-test.js && node scripts/v013-test.js && node scripts/v0131-test.js && node scripts/v0132-test.js && node scripts/v0133-test.js && node scripts/reliability-test.js && node scripts/workspace-ui-test.js && node scripts/prompt-pipe-test.js && node scripts/transport-test.js && node scripts/security-test.js && node scripts/isolation-test.js && node scripts/local-engine-test.js",
     "test:ruflo-contract": "node scripts/ruflo-contract-test.js",
     "dist": "electron-builder --win portable"
   },

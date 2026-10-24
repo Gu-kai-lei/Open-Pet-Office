@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { openablePath } = require('../src/path-safety');
-const { pickKeys, RENDERER_SETTINGS, RENDERER_UI } = require('../src/ipc-guards');
+const { pickKeys, RENDERER_SETTINGS, RENDERER_UI, delegationEngine } = require('../src/ipc-guards');
 const { ensureUserProviderConfig, PROVIDER_ID } = require('../src/codex-transport');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pet-office-security-test-'));
@@ -41,6 +41,8 @@ try {
   assert.deepEqual(pickKeys({ hiddenPets: ['w1'], activeProjectId: 'x' }, RENDERER_UI), { hiddenPets: ['w1'] });
   assert.deepEqual(pickKeys(null, RENDERER_UI), {});
   assert.deepEqual(pickKeys(['themeMode'], RENDERER_SETTINGS), {});
+  assert.equal(delegationEngine('ruflo'), 'ruflo');
+  assert.equal(delegationEngine('anything-else'), 'local');
 
   // Writing the user's global Codex config always leaves a restorable backup.
   const codexHome = path.join(root, 'codex');

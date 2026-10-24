@@ -214,7 +214,7 @@ manager = new MissionManager({
   runtimeRoot: path.join(root, 'manager-runtime'), projects: () => [{ id: 'p1', name: '测试项目', path: project }],
   roster: () => [{ id: 'supervisor', name: '主管', model: null }, { id: 'w1', name: '甲', model: null }, { id: 'w2', name: '乙', model: null }],
   supervisorModel: () => null, planner, dispatcher,
-  ruflo: new FakeRufloAdapter(),
+  ruflo: new FakeRufloAdapter(), engine: () => 'ruflo',
 });
 
 (async () => {
@@ -246,7 +246,7 @@ manager = new MissionManager({
   fs.mkdirSync(otherProject, { recursive: true });
   const otherManager = new MissionManager({
     runtimeRoot: path.join(root, 'other-runtime'), projects: () => [{ id: 'p2', name: '另一个项目', path: otherProject }],
-    roster: manager.roster, supervisorModel: () => null, planner, dispatcher: { cancel() {} }, ruflo: manager.ruflo,
+    roster: manager.roster, supervisorModel: () => null, planner, dispatcher: { cancel() {} }, ruflo: manager.ruflo, engine: () => 'ruflo',
   });
   const crossProject = await otherManager.createDraft({ taskText: '跨项目经验隔离', projectId: 'p2', participants: participants.map(item => ({ ...item, use: true })) });
   assert(crossProject.ok);
@@ -365,7 +365,7 @@ manager = new MissionManager({
   };
   conflictManager = new MissionManager({
     runtimeRoot: path.join(root, 'conflict-runtime'), projects: () => [{ id: 'conflict', name: '冲突项目', path: conflictProject }],
-    roster: manager.roster, supervisorModel: () => null, planner: conflictPlanner, dispatcher: conflictDispatcher, ruflo: new FakeRufloAdapter(),
+    roster: manager.roster, supervisorModel: () => null, planner: conflictPlanner, dispatcher: conflictDispatcher, ruflo: new FakeRufloAdapter(), engine: () => 'ruflo',
   });
   const conflictDraft = await conflictManager.createDraft({ taskText: '写入同一路径', projectId: 'conflict', participants: participants.map(item => ({ ...item, use: true })) });
   assert(conflictDraft.ok);

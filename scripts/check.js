@@ -28,6 +28,8 @@ const files = [
   'src/fullscreen-probe.js',
   'src/link-utils.js',
   'src/codex-transport.js',
+  'src/local-coordinator.js',
+  'src/coordination-utils.js',
   'src/ipc-guards.js',
   'src/main.js',
   'src/preload.js',
@@ -57,6 +59,7 @@ const files = [
   'scripts/mission-real-e2e.js',
   'scripts/security-test.js',
   'scripts/isolation-test.js',
+  'scripts/local-engine-test.js',
 ];
 
 let failed = false;

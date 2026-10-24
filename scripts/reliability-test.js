@@ -26,14 +26,14 @@ function fixture(planner = {}) {
   const manager = new MissionManager({
     runtimeRoot: root, projects: () => [{ id: 'p', name: 'test', path: root }],
     roster: () => [{ id: 'w1', name: 'worker', model: 'allowed' }],
-    supervisorModel: () => null, planner, dispatcher: { cancel: noop }, ruflo: new FakeRufloAdapter(),
+    supervisorModel: () => null, planner, dispatcher: { cancel: noop }, ruflo: new FakeRufloAdapter(), engine: () => 'ruflo',
   });
   manager.store = { create: noop, save: noop, event: noop, message: noop, messages: () => [], review: noop, missionDir: () => root };
   manager.supervisorRuntime = () => root;
   return manager;
 }
 function mission(id = 'm', tasks = []) {
-  return { id, status: 'running', projectPath: root, participants: [{ petId: 'w1', model: 'allowed' }], tasks: tasks.map(task => ({ rufloTaskId: 'remote-' + task.id, ...task })) };
+  return { id, engine: 'ruflo', status: 'running', projectPath: root, participants: [{ petId: 'w1', model: 'allowed' }], tasks: tasks.map(task => ({ rufloTaskId: 'remote-' + task.id, ...task })) };
 }
 function clientFixture() {
   const children = [];

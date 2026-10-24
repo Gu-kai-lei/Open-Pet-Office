@@ -62,7 +62,7 @@ function status(ok, warning = false) {
   return ok ? 'ok' : (warning ? 'warning' : 'error');
 }
 
-async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth = {}, quotaCache = {}, rufloHealth = null } = {}) {
+async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth = {}, quotaCache = {}, rufloHealth = null, delegationEngine = 'local' } = {}) {
   const [codex, proxy] = await Promise.all([commandVersion(), proxyHealth()]);
   let modelCount = 0;
   let catalogExists = false;
@@ -97,7 +97,9 @@ async function collectDiagnostics({ appServerHealth = {}, desktopMonitorHealth =
       { id: 'token', label: '额度管理令牌', status: status(fs.existsSync(ADMIN_TOKEN_FILE), true), detail: fs.existsSync(ADMIN_TOKEN_FILE) ? '已配置' : '未配置；额度功能不可用' },
       { id: 'quota', label: '额度接口', status: status(!!quotaCache.ok, !!quotaCache.stale), detail: quotaCache.ok ? '最近刷新成功' : (quotaCache.stale ? '当前显示缓存 · ' + safeText(quotaCache.error) : safeText(quotaCache.error || '尚未成功刷新')) },
       { id: 'sessions', label: 'Codex 任务监听', status: status(fs.existsSync(sessionsPath) && desktopMonitorHealth.ok !== false, fs.existsSync(sessionsPath)), detail: desktopMonitorHealth.ok === false ? safeText(desktopMonitorHealth.error) : '会话目录可读' },
-      { id: 'ruflo', label: 'Ruflo 分工运行时', status: rufloReady ? 'ok' : (rufloHealth ? 'warning' : 'error'), detail: rufloDetail },
+      delegationEngine === 'ruflo'
+        ? { id: 'ruflo', label: 'Ruflo 分工运行时（实验性）', status: rufloReady ? 'ok' : (rufloHealth ? 'warning' : 'error'), detail: rufloDetail }
+        : { id: 'delegation', label: '分工引擎', status: 'ok', detail: '内置协调器 · 无需 Node.js、npm 或额外运行时' },
       {
         id: 'appserver',
         label: '桌宠会话服务',

@@ -166,13 +166,13 @@ class MissionStore {
         mission.projectPath = mission.projectPath || project.path;
         mission.engine = mission.engine || 'legacy';
         mission.schemaVersion = Number(mission.schemaVersion) || 1;
-        mission.legacy = mission.schemaVersion < 2 || mission.engine !== 'ruflo';
+        mission.legacy = mission.schemaVersion < 2 || !['ruflo', 'local'].includes(mission.engine);
         if (ACTIVE.has(mission.status) && (mission.legacy || !['awaiting_confirmation', 'needs_input'].includes(mission.status))) {
           mission.interruptedFrom = mission.status;
           mission.status = 'interrupted';
           mission.interruptionReason = mission.legacy
-            ? '这是旧版 Mission，仅供查看；可复制为 Ruflo 任务重新执行。'
-            : 'Pet Office 已重启；请对账 Ruflo swarm 与任务状态后恢复。';
+            ? '这是旧版 Mission，仅供查看；可复制为新任务重新执行。'
+            : (mission.engine === 'ruflo' ? 'Pet Office 已重启；请对账 Ruflo swarm 与任务状态后恢复。' : 'Pet Office 已重启；请检查任务状态后恢复。');
           for (const task of mission.tasks || []) {
             if (['queued', 'running', 'reviewing'].includes(task.status)) task.status = 'interrupted';
           }

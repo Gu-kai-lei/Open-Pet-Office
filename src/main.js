@@ -18,12 +18,13 @@ const diagnostics = require('./diagnostics');
 const { MissionManager } = require('./mission-manager');
 const { RufloRuntimeManager } = require('./ruflo-runtime');
 const { RufloAdapter } = require('./ruflo-adapter');
+const { LocalCoordinator } = require('./local-coordinator');
 const { hydrateProject, clearProjectInbox } = require('./project-service');
 const { recommendAgents } = require('./recommender');
 const releaseManager = require('./release-manager');
 const { isFullscreenBounds, probeForegroundWindow } = require('./fullscreen-probe');
 const { normalizeDroppedLinks } = require('./link-utils');
-const { RENDERER_SETTINGS, RENDERER_UI, pickKeys } = require('./ipc-guards');
+const { RENDERER_SETTINGS, RENDERER_UI, pickKeys, delegationEngine } = require('./ipc-guards');
 
 cfg.ensureDirs();
 try {
@@ -131,7 +132,9 @@ const missionManager = new MissionManager({
   models: () => catalog.loadModels(),
   planner,
   dispatcher,
+  local: new LocalCoordinator({ root: cfg.DIRS.memory, log: cfg.log }),
   ruflo,
+  engine: () => state.settings.delegationEngine,
   log: cfg.log,
   onSnapshot: missions => {
     send('mission:snapshot', { missions });
@@ -1607,6 +1610,7 @@ ipcMain.handle('settings:set', (e, patch) => {
   Object.assign(state.settings, pickKeys(patch, RENDERER_SETTINGS));
   state.settings.autostart = !!state.settings.autostart;
   state.settings.themeMode = ['warm', 'dark', 'system'].includes(state.settings.themeMode) ? state.settings.themeMode : 'warm';
+  state.settings.delegationEngine = delegationEngine(state.settings.delegationEngine);
   state.settings.maxParallel = Math.max(1, Math.min(5, Number(state.settings.maxParallel) || 5));
   state.settings.petScale = Math.max(0.8, Math.min(1.4, Number(state.settings.petScale) || 1));
   state.settings.compactMode = !!state.settings.compactMode;
@@ -1743,14 +1747,20 @@ ipcMain.handle('petdex:open', async () => {
 });
 ipcMain.handle('quota:refresh', async () => { await refreshQuotas(true); return quotaCache; });
 ipcMain.handle('diagnostics:get', async () => {
+  const engine = state.settings.delegationEngine;
   let rufloHealth = null;
-  try { rufloHealth = await ruflo.health(state.activeProjectId, { probe: true }); }
-  catch (error) { rufloHealth = { ready: false, state: 'error', checks: { mcp: { ok: false, value: error.message } } }; }
+  // Probing Ruflo spawns Node, npm and an MCP server; only do it when the user
+  // actually chose that engine.
+  if (engine === 'ruflo') {
+    try { rufloHealth = await ruflo.health(state.activeProjectId, { probe: true }); }
+    catch (error) { rufloHealth = { ready: false, state: 'error', checks: { mcp: { ok: false, value: error.message } } }; }
+  }
   return diagnostics.collectDiagnostics({
     appServerHealth: appServer.health(),
     desktopMonitorHealth,
     quotaCache,
     rufloHealth,
+    delegationEngine: engine,
   });
 });
 ipcMain.handle('desktop:displays', () => ({ displays: displaySnapshot(), activeDisplayId, fullscreenActive }));

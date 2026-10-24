@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const { pathToFileURL } = require('url');
+const { redact } = require('./coordination-utils');
 
 const RUFLO_VERSION = '3.43.0';
 const RUFLO_CLI_VERSION = '3.43.0';
@@ -36,13 +37,6 @@ function atLeast(value, major, minor) {
 
 function checksRuntimeInstalled(versions) {
   return !!versions && versions.ruflo === RUFLO_VERSION && versions.cli === RUFLO_CLI_VERSION;
-}
-
-function redact(value) {
-  return String(value == null ? '' : value)
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[REDACTED]')
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{8,}/gi, '$1[REDACTED]')
-    .replace(/\b(api[_ -]?key|token|password|secret)\b\s*[:=]\s*([^\s,;]+)/gi, '$1=[REDACTED]');
 }
 
 function commandVersion(command, args) {

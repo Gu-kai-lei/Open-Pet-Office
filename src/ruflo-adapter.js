@@ -2,36 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
-const { redact, RUFLO_VERSION } = require('./ruflo-runtime');
-
-function projectNamespace(projectId) {
-  const stable = crypto.createHash('sha256').update(String(projectId || '')).digest('hex').slice(0, 20);
-  return 'pet-office-project-' + stable;
-}
-
-function sanitizeMemory(value) {
-  const walk = (input, key = '') => {
-    if (typeof input === 'string') {
-      let text = redact(input)
-        .replace(/\b[A-Za-z]:\\Users\\[^\\\s]+\\/gi, '[PRIVATE_PATH]\\')
-        .replace(/\b[A-Za-z]:\\[^\r\n,;]+/g, '[ABSOLUTE_PATH]');
-      if (/attachment|附件/i.test(key)) text = '[附件内容不写入记忆]';
-      return text.slice(0, 6000);
-    }
-    if (Array.isArray(input)) return input.slice(0, 50).map(item => walk(item, key));
-    if (input && typeof input === 'object') {
-      const output = {};
-      for (const [childKey, child] of Object.entries(input)) {
-        if (/^(api.?key|token|password|secret|authorization|rawAttachment|conversation)$/i.test(childKey)) continue;
-        output[childKey] = walk(child, childKey);
-      }
-      return output;
-    }
-    return input;
-  };
-  return walk(value);
-}
+const { RUFLO_VERSION } = require('./ruflo-runtime');
+const { projectNamespace, sanitizeMemory } = require('./coordination-utils');
 
 function normalizeHits(result) {
   const items = Array.isArray(result) ? result

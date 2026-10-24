@@ -83,7 +83,9 @@ assert.ok(source.includes("openMissionDetails(missionId)"), 'live Mission cards 
 assert.ok(source.includes("result.code === 'ACTIVE_MISSION'"), 'stale Mission thread links must fall back to in-app records');
 assert.ok(source.includes('任务由 Pet Office 与 Ruflo 协同持有'), 'the UI must explain Mission thread ownership');
 assert.ok(source.includes('showRufloSetup'), 'delegation must expose the Ruflo setup wizard');
-assert.ok(source.includes('复制为 Ruflo 任务'), 'legacy Missions must expose a Ruflo clone action');
+assert.ok(source.includes('复制为新任务'), 'legacy Missions must expose a clone action');
+assert.ok(source.includes("mission.engine === 'ruflo'"), 'Mission cards must label the engine that runs them');
+assert.ok(source.includes("['local', '内置协调器（推荐）']"), 'settings must offer the built-in engine as the default');
 assert.ok(source.includes('高级详情与诊断'), 'Mission cards must expose advanced Ruflo diagnostics');
 assert.ok(source.includes('missionFinalHtml(mission.finalReview)'), 'completed Mission cards must render the readable final review block');
 assert.ok(source.includes('mission-verdict'), 'final review verdict must be shown as a labeled badge');
