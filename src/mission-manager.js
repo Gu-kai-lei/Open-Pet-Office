@@ -820,6 +820,10 @@ class MissionManager {
     const brief = [
       '# Mission', mission.objective, '# 你的任务', task.title, task.brief,
       '# 允许范围', task.fileScopes.join('\n') || '(未限定；仍只可在当前隔离工作区工作)',
+      '# 隔离说明',
+      '当前工作区只包含项目的可见文件；被 .gitignore 排除的数据集、模型权重和构建产物不会复制进来。',
+      '需要读取这些数据时，只能以只读方式访问主项目：' + mission.projectPath,
+      '交付文件必须写在当前工作区内且不能位于 .gitignore 排除的路径，否则不会被收集。',
       '# 交付物', task.deliverables.join('\n'), '# 验证要求', task.validation.join('\n') || '(如无法运行请在报告中说明)',
       '# 依赖结论', ...task.dependsOn.map(id => { const dep = mission.tasks.find(item => item.id === id); return '- ' + id + ': ' + ((dep && dep.report && dep.report.summary) || (dep && dep.status) || '未知'); }),
       '# Ruflo 协作信息',

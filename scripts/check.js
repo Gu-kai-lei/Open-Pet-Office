@@ -56,6 +56,7 @@ const files = [
   'scripts/transport-test.js',
   'scripts/mission-real-e2e.js',
   'scripts/security-test.js',
+  'scripts/isolation-test.js',
 ];
 
 let failed = false;

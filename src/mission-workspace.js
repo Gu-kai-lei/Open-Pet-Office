@@ -6,11 +6,106 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { workspacePath } = require('./path-safety');
 
-const SKIP_DIRS = new Set(['.git', '.pet-office', 'node_modules', 'dist', 'build', '.cache', '.next', 'coverage']);
+const SKIP_DIRS = new Set([
+  '.git', '.pet-office', 'node_modules', 'dist', 'build', '.cache', '.next', 'coverage',
+  '__pycache__', '.venv', 'venv', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.tox', '.gradle',
+]);
+// Isolation copies and hashes every candidate file. Refuse clearly instead of
+// freezing the app or filling the disk when a project carries datasets or
+// weights that are not excluded by .gitignore.
+const DEFAULT_LIMITS = { maxFiles: 20000, maxBytes: 2 * 1024 * 1024 * 1024 };
+const GIT = process.platform === 'win32' ? 'git.exe' : 'git';
 
 function runGit(cwd, args) {
-  const result = spawnSync('git.exe', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(GIT, ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
   return { ok: result.status === 0, stdout: String(result.stdout || '').trim(), stderr: String(result.stderr || '').trim() };
+}
+
+function skippedPath(rel) {
+  return rel.split('/').some(part => SKIP_DIRS.has(part));
+}
+
+// An empty private repository lets git apply .gitignore rules to folders that
+// are not repositories themselves (snapshot copies and non-Git projects)
+// without ever writing git metadata into the user's folder.
+let emptyGitDir = null;
+function privateGitDir() {
+  if (emptyGitDir && fs.existsSync(path.join(emptyGitDir, 'HEAD'))) return emptyGitDir;
+  const dir = path.join(require('os').tmpdir(), 'pet-office-empty-git');
+  if (!fs.existsSync(path.join(dir, 'HEAD'))) {
+    const made = spawnSync(GIT, ['init', '--bare', '--quiet', dir], { encoding: 'utf8', windowsHide: true });
+    if (made.status !== 0) return null;
+  }
+  emptyGitDir = dir;
+  return dir;
+}
+
+function gitCandidates(root, ownRepository) {
+  const args = ownRepository
+    ? ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard']
+    : null;
+  let result;
+  if (args) result = spawnSync(GIT, args, { encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
+  else {
+    const gitDir = privateGitDir();
+    if (!gitDir) return null;
+    result = spawnSync(GIT, ['--git-dir=' + gitDir, '--work-tree=' + root, '-C', root, 'ls-files', '-z', '--others', '--exclude-standard'],
+      { encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
+  }
+  if (!result || result.status !== 0 || result.error) return null;
+  return [...new Set(String(result.stdout || '').split('\0').filter(Boolean))];
+}
+
+function walkCandidates(root, current = root, output = []) {
+  let entries = [];
+  try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return output; }
+  for (const entry of entries) {
+    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
+    const full = path.join(current, entry.name);
+    if (entry.isDirectory()) walkCandidates(root, full, output);
+    else if (entry.isFile()) output.push(path.relative(root, full).replace(/\\/g, '/'));
+  }
+  return output;
+}
+
+function isOwnRepository(root) {
+  if (!fs.existsSync(path.join(root, '.git'))) return false;
+  const top = runGit(root, ['rev-parse', '--show-toplevel']);
+  return top.ok && path.resolve(top.stdout) === path.resolve(root);
+}
+
+// Files that belong to the visible project state: tracked plus untracked files
+// that .gitignore does not exclude. Symlinks are skipped so isolation never
+// reads or copies content outside the project.
+function projectFiles(root, limits = DEFAULT_LIMITS) {
+  const candidates = gitCandidates(root, isOwnRepository(root)) || walkCandidates(root);
+  const files = [];
+  let bytes = 0;
+  for (const rel of candidates.sort()) {
+    if (skippedPath(rel)) continue;
+    let stat;
+    try { stat = fs.lstatSync(path.join(root, rel)); } catch { continue; }
+    if (!stat.isFile()) continue;
+    files.push({ rel, stat });
+    bytes += stat.size;
+    if (files.length > limits.maxFiles || bytes > limits.maxBytes) {
+      const error = new Error('项目过大，无法安全创建隔离工作区：超过 ' + limits.maxFiles + ' 个文件或 '
+        + Math.round(limits.maxBytes / 1073741824) + ' GB。请用 .gitignore 排除数据集、模型权重和构建产物后重试。');
+      error.code = 'PROJECT_TOO_LARGE';
+      throw error;
+    }
+  }
+  return files;
+}
+
+const hashCache = new Map();
+function cachedHash(file, stat) {
+  const hit = hashCache.get(file);
+  if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs && hit.ctimeMs === stat.ctimeMs) return hit.hash;
+  const hash = hashFile(file);
+  hashCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, hash });
+  if (hashCache.size > 100000) hashCache.delete(hashCache.keys().next().value);
+  return hash;
 }
 
 function hashFile(file) {
@@ -45,32 +140,20 @@ function isBinaryFile(file) {
   } catch { return true; }
 }
 
-function walk(root, current = root, output = {}) {
-  let entries = [];
-  try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return output; }
-  for (const entry of entries) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
-    const full = path.join(current, entry.name);
-    const rel = path.relative(root, full).replace(/\\/g, '/');
-    if (entry.isDirectory()) walk(root, full, output);
-    else if (entry.isFile()) {
-      try {
-        const stat = fs.statSync(full);
-        output[rel] = { hash: hashFile(full), size: stat.size };
-      } catch {}
-    }
+function walk(root, limits = DEFAULT_LIMITS) {
+  const output = {};
+  for (const { rel, stat } of projectFiles(root, limits)) {
+    try { output[rel] = { hash: cachedHash(path.join(root, rel), stat), size: stat.size }; } catch {}
   }
   return output;
 }
 
-function copyTree(source, target) {
+function copyTree(source, target, limits = DEFAULT_LIMITS) {
   fs.mkdirSync(target, { recursive: true });
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
-    const from = path.join(source, entry.name);
-    const to = path.join(target, entry.name);
-    if (entry.isDirectory()) copyTree(from, to);
-    else if (entry.isFile()) fs.copyFileSync(from, to);
+  for (const { rel } of projectFiles(source, limits)) {
+    const to = path.join(target, rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(path.join(source, rel), to);
   }
 }
 
@@ -112,9 +195,10 @@ function matchesScope(rel, scope) {
 }
 
 class MissionWorkspace {
-  constructor({ runtimeRoot, log = () => {} }) {
+  constructor({ runtimeRoot, log = () => {}, limits = DEFAULT_LIMITS }) {
     this.runtimeRoot = runtimeRoot;
     this.log = log;
+    this.limits = { ...DEFAULT_LIMITS, ...limits };
   }
 
   inspect(projectPath) {
@@ -131,7 +215,7 @@ class MissionWorkspace {
       isGit,
       clean: isGit && !relevantStatus,
       head: head.stdout || null,
-      manifest: walk(projectPath),
+      manifest: walk(projectPath, this.limits),
       createdAt: Date.now(),
     };
   }
@@ -148,10 +232,10 @@ class MissionWorkspace {
       if (!added.ok) throw new Error('无法创建集成 worktree: ' + added.stderr);
       mission.integrationBranch = branch;
     } else {
-      copyTree(mission.projectPath, integration);
+      copyTree(mission.projectPath, integration, this.limits);
     }
     mission.integrationDir = integration;
-    mission.integrationManifest = walk(integration);
+    mission.integrationManifest = walk(integration, this.limits);
     return mission.baseline;
   }
 
@@ -165,15 +249,15 @@ class MissionWorkspace {
       if (!added.ok) throw new Error('无法创建工作者 worktree: ' + added.stderr);
       task.workspaceBranch = branch;
     } else {
-      copyTree(mission.integrationDir, dir);
+      copyTree(mission.integrationDir, dir, this.limits);
     }
     task.workspace = dir;
-    task.workspaceBaseline = walk(dir);
+    task.workspaceBaseline = walk(dir, this.limits);
     return dir;
   }
 
   collect(mission, task, artifactDir) {
-    const after = walk(task.workspace);
+    const after = walk(task.workspace, this.limits);
     const changes = changedFiles(task.workspaceBaseline || {}, after);
     const filesDir = path.join(artifactDir, 'files');
     for (const change of changes) {
@@ -220,7 +304,7 @@ class MissionWorkspace {
   }
 
   finalChangeSet(mission, artifactDir) {
-    const after = walk(mission.integrationDir);
+    const after = walk(mission.integrationDir, this.limits);
     const changes = changedFiles(mission.integrationManifest || {}, after);
     const filesDir = path.join(artifactDir, 'final-files');
     for (const change of changes) {
@@ -249,7 +333,6 @@ class MissionWorkspace {
     const journal = path.join(mission.runtimeDir, 'apply-pending.json');
     if (fs.existsSync(journal)) throw new Error('发现尚未恢复的主项目回写记录，已停止重复回写。');
     const backup = path.join(mission.runtimeDir, 'backup-before-apply-' + Date.now());
-    copyTree(mission.projectPath, backup);
     const entries = (changeSet.changes || []).map(change => {
       const rel = safeRel(change.path);
       const target = workspacePath(mission.projectPath, rel);
@@ -259,6 +342,15 @@ class MissionWorkspace {
       if (source && targetHash !== change.hash) throw new Error('待回写文件与已复核清单不符：' + rel);
       return { path: rel, originalHash, targetHash };
     });
+    // Only files this apply touches can need restoring, so back up exactly
+    // those instead of copying the whole project (datasets included).
+    for (const entry of entries) {
+      if (!entry.originalHash) continue;
+      const copy = path.join(backup, entry.path);
+      fs.mkdirSync(path.dirname(copy), { recursive: true });
+      fs.copyFileSync(path.join(mission.projectPath, entry.path), copy);
+    }
+    fs.mkdirSync(backup, { recursive: true });
     const record = { projectPath: mission.projectPath, backup, entries };
     const handle = fs.openSync(journal, 'wx');
     try { fs.writeFileSync(handle, JSON.stringify(record)); fs.fsyncSync(handle); }
@@ -333,4 +425,4 @@ class MissionWorkspace {
   }
 }
 
-module.exports = { MissionWorkspace, runGit, walk, copyTree, changedFiles, safeRel, matchesScope, SKIP_DIRS };
+module.exports = { MissionWorkspace, runGit, walk, copyTree, projectFiles, changedFiles, safeRel, matchesScope, SKIP_DIRS, DEFAULT_LIMITS };
